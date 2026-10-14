@@ -1,0 +1,11 @@
+{
+  "name": "ai-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "多设备多账号 AI 协作空间",
+  "scripts": {
+    "start": "node server.js",
+    "share": "bash share.sh",
+    "test": "node test.js"
+  }
+}

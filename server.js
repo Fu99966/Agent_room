@@ -1,0 +1,828 @@
+// AI 协作空间：零依赖 Node 服务。多台设备 / 多个账号的 AI 和人通过链接加入同一空间协作。
+// 角色：admin（创建者，可指定角色）、supervisor（监督者，派发与审核任务）、employee（员工，执行任务）
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const os = require('os');
+const { execFile } = require('child_process');
+
+// 上传文件转文本：文本类直接解码；Word / RTF / ODT / HTML 用 macOS 自带 textutil；PDF 用 python3 + pypdf
+const TEXT_EXT = /\.(md|markdown|txt|text|json|ya?ml|rst|csv|tsv|log|ini|toml|xml|py|js|ts|sh|tex)$/i;
+const TEXTUTIL_EXT = /\.(docx?|rtf|rtfd|odt|html?|wordml|webarchive)$/i;
+function run(cmd, argv) {
+  return new Promise((ok, no) => execFile(cmd, argv, { timeout: 30000, maxBuffer: 20 * 1024 * 1024 }, (e, out, err) => e ? no(new Error(String(err || e.message).trim().slice(0, 300))) : ok(out)));
+}
+async function fileToText(f) {
+  const name = clip(f.name, 120) || 'README.md';
+  if (f.content !== undefined) return { name, content: String(f.content) };
+  const buf = Buffer.from(String(f.base64 || ''), 'base64');
+  if (!buf.length) throw new Error('文件是空的');
+  if (buf.length > MAX_RAW) throw new Error('文件超过 10MB');
+  if (TEXT_EXT.test(name) || (!/\.[a-z0-9]+$/i.test(name) && !buf.includes(0))) return { name, content: buf.toString('utf8').replace(/^\uFEFF/, '') };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aiws-up-'));
+  const inFile = path.join(dir, 'in' + path.extname(name).toLowerCase());
+  try {
+    fs.writeFileSync(inFile, buf);
+    let content;
+    if (TEXTUTIL_EXT.test(name)) content = await run('/usr/bin/textutil', ['-convert', 'txt', '-encoding', 'UTF-8', '-stdout', inFile]);
+    else if (/\.pdf$/i.test(name)) content = await run('python3', ['-c', 'import sys,pypdf\nr=pypdf.PdfReader(sys.argv[1])\nprint("\\n\\n".join((p.extract_text() or "") for p in r.pages))', inFile]);
+    else if (/\.pages$/i.test(name)) throw new Error('Pages 文件请先在 Pages 里「导出为 Word 或 PDF」再上传');
+    else throw new Error(`暂不支持 ${path.extname(name)} 格式，请上传 .md / .txt / .docx / .pdf`);
+    content = content.trim();
+    if (!content) throw new Error('没能从文件里读出文字（可能是扫描版 PDF 或图片）');
+    return { name, content, convertedFrom: path.extname(name).slice(1) };
+  } catch (e) {
+    if (/ENOENT|No module named/.test(e.message)) throw new Error('本机缺少转换工具，请把文档另存为 .md 或 .txt 再上传');
+    throw e;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+const PORT = Number(process.env.AIWS_PORT || 4300);
+const ROOT = __dirname;
+const PUBLIC = path.join(ROOT, 'public');
+const DATA_DIR = process.env.AIWS_DATA ? path.resolve(process.env.AIWS_DATA) : path.join(ROOT, 'data'); // 测试用独立目录，不碰正式数据
+const DATA_FILE = path.join(DATA_DIR, 'spaces.json');
+const FILES_DIR = path.join(DATA_DIR, 'files');
+const MAX_BODY = 16 * 1024 * 1024; // 允许上传最大约 10MB 的原始文件（base64 编码后变大）
+const MAX_RAW = 10 * 1024 * 1024;
+const MAX_DOC = 1024 * 1024; // 目标文档 / 日志文件最大 1MB 文本
+const MAX_MESSAGES = 1000;
+const MAX_LOGS = 3000;
+
+// ---------- 持久化 ----------
+let db = { spaces: {} };
+try { db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch { /* 首次启动 */ }
+for (const sp of Object.values(db.spaces)) { sp.logs ||= []; sp.goal ||= { text: '', status: 'active' }; if (!sp.logsBackfilled) backfillLogs(sp); }
+// 旧空间：把已有的任务备注、提交、成员发言补进工作日志，按时间排序
+function backfillLogs(sp) {
+  const add = (m, at, l) => m && sp.logs.push({ id: crypto.randomBytes(6).toString('hex'), member: m.id, memberName: m.name, at, auto: true, problem: '', next: '', taskId: null, taskTitle: '', ...l });
+  for (const t of sp.tasks) for (const n of t.notes) add(sp.members[n.by], n.at, { taskId: t.id, taskTitle: t.title, done: n.text, source: 'note' });
+  for (const x of sp.messages) {
+    const m = sp.members[x.from]; if (!m) continue;
+    const t = x.taskId && sp.tasks.find(k => k.id === x.taskId);
+    if (x.kind === 'submit') add(m, x.at, { taskId: t?.id || null, taskTitle: t?.title || '', done: '提交验收：\n' + x.text, source: 'submit' });
+    else if (x.kind === 'chat' && m.kind === 'ai' && !x.to) add(m, x.at, { done: x.text, source: 'chat' });
+  }
+  sp.logs.sort((a, b) => a.at - b.at);
+  for (const m of Object.values(sp.members)) { const last = sp.logs.filter(l => l.member === m.id).pop(); if (last) m.lastLogAt = last.at; }
+  sp.logsBackfilled = true;
+}
+let saveTimer = null;
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+    const tmp = DATA_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(db, null, 1));
+    fs.renameSync(tmp, DATA_FILE);
+  }, 200);
+}
+
+const id = (n = 6) => crypto.randomBytes(n).toString('hex');
+const token = () => crypto.randomBytes(24).toString('base64url');
+const now = () => Date.now();
+const clip = (v, n) => String(v ?? '').slice(0, n).trim();
+
+// ---------- 实时推送 (SSE) ----------
+const streams = new Map(); // spaceId -> Set<{res, memberId}>
+const waiters = new Map(); // spaceId -> Set<fn>
+function wake(spaceId) {
+  const set = waiters.get(spaceId); if (!set) return;
+  waiters.delete(spaceId);
+  for (const fn of set) fn();
+}
+function waitChange(spaceId, ms) {
+  return new Promise(resolve => {
+    if (!waiters.has(spaceId)) waiters.set(spaceId, new Set());
+    const set = waiters.get(spaceId);
+    const done = () => { clearTimeout(t); set.delete(done); resolve(); };
+    const t = setTimeout(done, ms);
+    set.add(done);
+  });
+}
+function broadcast(spaceId, type, payload) {
+  if (type !== 'members') setImmediate(() => wake(spaceId));
+  const set = streams.get(spaceId);
+  if (!set) return;
+  const data = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const c of set) c.res.write(data);
+}
+setInterval(() => {
+  for (const set of streams.values()) for (const c of set) c.res.write('event: ping\ndata: {}\n\n');
+}, 25000);
+
+// ---------- 领域逻辑 ----------
+function publicMember(m) {
+  const { token: _t, ...rest } = m;
+  return { ...rest, online: now() - (m.lastSeen || 0) < 90000, active: now() - Math.max(m.lastNextAt || 0, m.lastSeen || 0, m.bridge?.at || 0) < 120000 };
+}
+function snapshot(space, me) {
+  const visibleMsgs = space.messages.filter(x => !x.to || x.to === me.id || x.from === me.id).slice(-300);
+  return {
+    space: { id: space.id, name: space.name, createdAt: space.createdAt },
+    me: publicMember(me),
+    members: Object.values(space.members).map(publicMember),
+    tasks: space.tasks,
+    messages: visibleMsgs,
+    files: (space.files || []).filter(f => FILES.canSee(space, me, f)).map(FILES.meta),
+    logs: space.logs.slice(-500).map(logLite),
+    streams: space.streams || {},
+    goal: (({ doc, ...g }) => ({ ...g, docName: doc?.name || '', docSize: doc?.size || 0, docBy: doc?.uploadedBy || '' }))(space.goal),
+    inviteCode: me.role === 'admin' || me.role === 'supervisor' ? space.inviteCode : undefined,
+  };
+}
+function addMessage(space, from, text, opts = {}) {
+  const msg = { id: id(), from: from ? from.id : null, fromName: from ? from.name : '系统', text, to: opts.to || null, kind: opts.kind || 'chat', taskId: opts.taskId || null, ...(opts.files ? { files: opts.files } : {}), at: now() };
+  space.messages.push(msg);
+  setImmediate(() => wake(space.id));
+  if (space.messages.length > MAX_MESSAGES) space.messages.splice(0, space.messages.length - MAX_MESSAGES);
+  // 私信只推给相关的人
+  const set = streams.get(space.id);
+  if (set) for (const c of set) {
+    if (!msg.to || c.memberId === msg.to || c.memberId === msg.from) c.res.write(`event: message\ndata: ${JSON.stringify(msg)}\n\n`);
+  }
+  return msg;
+}
+// AI 会话实时流（桥接脚本上报：思考片段、工具调用、回复）
+function pushStream(space, me, ev) {
+  space.streams ||= {};
+  const list = (space.streams[me.id] ||= []);
+  const e = { id: id(), member: me.id, memberName: me.name, kind: clip(ev.kind, 20) || 'text', text: clip(ev.text, 4000), turn: clip(ev.turn, 40), at: now() };
+  list.push(e);
+  if (list.length > 200) list.splice(0, list.length - 200);
+  const set = streams.get(space.id);
+  if (set) for (const c of set) c.res.write(`event: stream\ndata: ${JSON.stringify(e)}\n\n`);
+  return e;
+}
+// 已读回执：AI 通过 next / inbox / MCP 真正取到消息时才算已读
+function markRead(space, me, msgs) {
+  const set = streams.get(space.id), changed = [];
+  for (const x of msgs) {
+    const m = space.messages.find(y => y.id === x.id);
+    if (!m || m.from === me.id) continue;
+    m.readBy ||= [];
+    if (!m.readBy.includes(me.id)) { m.readBy.push(me.id); changed.push(m.id); }
+  }
+  if (set) for (const mid of changed) for (const c of set) c.res.write(`event: read\ndata: ${JSON.stringify({ id: mid, member: me.id })}\n\n`);
+}
+function system(space, text) { return addMessage(space, null, text, { kind: 'system' }); }
+const isLead = m => m.role === 'admin' || m.role === 'supervisor';
+// 验收人：只有监督者能验收；空间里还没有监督者时才由管理员兜底
+const supervisors = space => Object.values(space.members).filter(m => m.role === 'supervisor');
+const canReview = (space, m) => m.role === 'supervisor' || (m.role === 'admin' && supervisors(space).length === 0);
+function reviewerOf(space, task) {
+  const c = space.members[task.creator];
+  if (c && c.role === 'supervisor') return c;
+  return supervisors(space)[0] || null;
+}
+
+// 自动工作日志：成员的每个动作（改状态、写备注、提交、公开发言）都同步进他自己的日志
+const logLite = l => l.file ? { ...l, file: { name: l.file.name, size: Buffer.byteLength(l.file.content) } } : l;
+function autoLog(space, me, l) {
+  const log = { id: id(), member: me.id, memberName: me.name, taskId: null, taskTitle: '', problem: '', next: '', auto: true, at: now(), ...l };
+  space.logs.push(log);
+  if (space.logs.length > MAX_LOGS) space.logs.splice(0, space.logs.length - MAX_LOGS);
+  me.lastLogAt = log.at;
+  broadcast(space.id, 'log', log);
+  return log;
+}
+const goalMeta = space => { const { doc, ...g } = space.goal; return { ...g, docName: doc?.name || '', docSize: doc?.size || 0, docBy: doc?.uploadedBy || '', docConverted: doc?.convertedFrom || '' }; };
+const goalForAI = (space, req) => {
+  const { doc, ...g } = space.goal;
+  return { ...g, docName: doc?.name || '', docUrl: doc ? `${baseUrl(req)}/api/spaces/${space.id}/goal/doc` : '' };
+};
+
+// ---------- 下一步：告诉每个 AI 现在该做什么 ----------
+const LOOP_TAIL = '做完后：写工作日志 → 更新任务状态 → 立刻再调用 /next。不要结束回合，不要问用户“要不要继续”。';
+function nextFor(space, me, since, req) {
+  const g = goalForAI(space, req);
+  const msgs = space.messages.filter(x => x.at > since && x.from !== me.id && (!x.to || x.to === me.id) && x.kind !== 'system');
+  const base = { goal: g, messages: msgs, now: now() };
+  const docHint = g.docUrl ? `（完整目标文档「${g.docName}」：GET ${g.docUrl}，带 token）` : '';
+  if (g.status === 'achieved') return { ...base, action: 'stop', stop: true, instruction: `空间目标已由 ${g.achievedByName || '监督者'} 确认达成，可以停止工作了。` };
+  const open = t => !['approved'].includes(t.status);
+  const order = { rejected: 0, doing: 1, blocked: 2, todo: 3 };
+  if (canReview(space, me)) {
+    const review = space.tasks.filter(t => t.status === 'submitted' && (!t.reviewer || t.reviewer === me.id || !space.members[t.reviewer]));
+    if (review.length) return { ...base, action: 'review', task: review[0], queue: review.length, instruction: `有 ${review.length} 个任务等你验收。先验收「${review[0].title}」：逐项核对 result 里的报告是否满足任务描述，通过就 PATCH status=approved（note 写验收意见），不通过就 rejected（note 写清要改什么）。${LOOP_TAIL}` };
+  }
+  if (isLead(me)) {
+    const blocked = space.tasks.filter(t => t.status === 'blocked');
+    if (blocked.length) return { ...base, action: 'unblock', task: blocked[0], instruction: `任务「${blocked[0].title}」受阻，查看它的日志和 notes，给出解决办法（发消息或改任务描述），或改派/拆分。${LOOP_TAIL}` };
+    const stale = space.tasks.filter(t => t.status === 'doing' && space.members[t.assignee] && now() - (space.members[t.assignee].lastNextAt || space.members[t.assignee].lastSeen || 0) > 10 * 60000);
+    if (stale.length && me.role === 'supervisor') return { ...base, action: 'nudge', task: stale[0], instruction: `${space.members[stale[0].assignee].name} 超过 10 分钟没有动静（任务「${stale[0].title}」）。给它发私信催办，或把任务改派给在线的员工。${LOOP_TAIL}` };
+    if (me.role === 'supervisor' || (me.role === 'admin' && !supervisors(space).length)) {
+      const idle = Object.values(space.members).filter(m => m.role === 'employee' && !space.tasks.some(t => t.assignee === m.id && open(t)));
+      const allDone = space.tasks.length && space.tasks.every(t => !open(t));
+      if (allDone) return { ...base, action: 'plan', instruction: `所有任务都已验收。对照空间目标「${g.text || g.docName || '（未设置）'}」${docHint}检查：如果目标已经真正达成，调用 POST /goal/achieve 结束整个空间的工作；如果还没达成，继续拆解并派发新任务。${LOOP_TAIL}` };
+      if (idle.length || !space.tasks.length) return { ...base, action: 'plan', idle: idle.map(m => ({ id: m.id, name: m.name })), instruction: `${idle.length ? `员工 ${idle.map(m => m.name).join('、')} 手上没有任务。` : ''}对照空间目标「${g.text || g.docName || '（未设置，请先向管理员确认目标）'}」${docHint}，拆解出下一批任务并派发给空闲员工。${LOOP_TAIL}` };
+    }
+  }
+  const mine = space.tasks.filter(t => t.assignee === me.id && open(t) && t.status !== 'submitted').sort((a, b) => order[a.status] - order[b.status] || a.createdAt - b.createdAt);
+  if (mine.length) {
+    const t = mine[0];
+    const lastReject = t.status === 'rejected' ? [...t.notes].reverse().find(n => space.members[n.by]?.role !== 'employee') : null;
+    const what = { rejected: `被退回了，按意见修改后重新提交：${lastReject ? lastReject.text : '见任务 notes'}`, doing: '继续推进，直到满足任务描述里的验收标准', blocked: '目前受阻：看看监督者有没有回复解决办法；有了就继续，没有就在频道里说明卡在哪', todo: '开始做：先 PATCH status=doing' }[t.status];
+    return { ...base, action: 'work', task: t, remaining: mine.length, instruction: `你的任务「${t.title}」${what}。全部做完后 PATCH status=submitted，result 里贴完整报告。${LOOP_TAIL}` };
+  }
+  if (me.role === 'employee') {
+    const free = space.tasks.find(t => !t.assignee && t.status === 'todo');
+    if (free) return { ...base, action: 'claim', task: free, instruction: `有一个无人认领的任务「${free.title}」，PATCH status=doing 即可认领并开始。${LOOP_TAIL}` };
+    const waiting = space.tasks.filter(t => t.assignee === me.id && t.status === 'submitted');
+    if (waiting.length) return { ...base, action: 'wait', instruction: `你提交的 ${waiting.length} 个任务正在等待验收，暂时没有新活。立刻再调用 /next 继续等待，不要结束。` };
+  }
+  if (msgs.length) return { ...base, action: 'reply', instruction: `有新消息，阅读并按需回复或行动。${LOOP_TAIL}` };
+  return { ...base, action: 'wait', instruction: '暂时没有需要你做的事。立刻再调用 /next 继续等待，不要结束回合。' };
+}
+
+// ---------- HTTP 工具 ----------
+function send(res, code, obj) {
+  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+  res.end(JSON.stringify(obj));
+}
+function text(res, code, body) {
+  res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+  res.end(body);
+}
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0, chunks = [];
+    req.on('data', c => { size += c.length; if (size > MAX_BODY) { reject(new Error('请求体过大')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(new Error('JSON 格式错误')); } });
+  });
+}
+function auth(req, url, space) {
+  const h = req.headers.authorization || '';
+  const t = h.startsWith('Bearer ') ? h.slice(7) : url.searchParams.get('token');
+  if (!t) return null;
+  const m = Object.values(space.members).find(x => x.token === t);
+  if (m) { m.lastSeen = now(); }
+  return m || null;
+}
+function baseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
+  return `${proto}://${req.headers['x-forwarded-host'] || req.headers.host}`;
+}
+
+// 给 AI 读的接入说明（纯文本，带上它自己的 token 或邀请码）
+function guide(req, space, invite, me) {
+  const B = baseUrl(req), S = space.id;
+  const authLine = me ? `你的身份令牌(token)：${me.token}\n你的成员ID：${me.id}\n你的角色：${me.role === 'supervisor' ? '监督者' : me.role === 'admin' ? '管理员' : '员工'}` :
+`第一步，先加入空间（只需一次，记住返回的 token）：
+curl -s -X POST ${B}/api/spaces/${S}/join -H 'content-type: application/json' \\
+  -d '{"invite":"${invite}","name":"你的名字，如 Claude-笔记本","kind":"ai","model":"你的模型名"}'
+返回里的 token 就是你之后所有请求的身份凭证。`;
+  return `# AI 协作空间「${space.name}」接入说明
+
+你被邀请进入一个多 AI 协作空间。空间里有一个「监督者」负责派活和验收，其他成员是「员工」负责执行。
+请通过下面的 HTTP 接口工作。所有接口都要带：-H 'authorization: Bearer <token>'
+
+${authLine}
+
+## ⚠️ 工作循环（最重要，必须遵守）
+你不是做完一件事就结束，而是要一直循环工作，直到空间目标达成：
+
+  while (true) {
+    r = GET /next            # 告诉你现在该做什么；没事可做时会挂起最多 50 秒等待新动静
+    if (r.stop) break        # 只有 stop=true（监督者确认目标达成）才可以停
+    按 r.instruction 去做 r.action（work / review / plan / unblock / nudge / claim / reply / wait）
+    写工作日志、更新任务状态
+  }
+
+- 不要在做完一个任务后结束回合，也不要问用户“要不要继续”，直接再调用 /next。
+- action=wait 时立刻再调用 /next，不要停。
+- 你的会话如果有回合或时长限制，结束前在日志里写清「做到哪了、下一步是什么」，下次一开始先调用 /next 接着做。
+
+curl -s '${B}/api/spaces/${S}/next?wait=50' -H 'authorization: Bearer <token>'
+
+## 实时对话（推荐）
+如果你是在命令行里运行的 Claude Code / Codex，让用户在这台设备上运行桥接脚本：
+  curl -fsSLO ${B}/bridge.js && node bridge.js --space "${B}/s/${S}" --agent claude
+之后网页里发给你的消息会直接进入你的会话，你的回复和过程也会实时出现在网页上。
+
+## 常用接口
+1. 收件箱（派给你的任务 + 发给你的消息，建议每 30~60 秒轮询一次；since 填上次返回的 now）：
+   curl -s '${B}/api/spaces/${S}/inbox?since=0' -H 'authorization: Bearer <token>'
+2. 查看空间全貌（成员、全部任务、消息）：
+   curl -s ${B}/api/spaces/${S}/state -H 'authorization: Bearer <token>'
+3. 发消息（to 可选，填成员ID即私信）：
+   curl -s -X POST ${B}/api/spaces/${S}/messages -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{"text":"你好"}'
+4. 更新任务（员工：status 可为 doing / submitted / blocked；progress 0~100；result 填完整报告，支持 Markdown 表格）：
+   curl -s -X PATCH ${B}/api/spaces/${S}/tasks/<任务ID> -H 'authorization: Bearer <token>' -H 'content-type: application/json' \\
+     -d '{"status":"submitted","progress":100,"result":"交付内容或链接","note":"说明"}'
+5. 写工作日志（必做，见下方守则；taskId、problem、next 可选）。说明：你改任务状态、写 note、提交、在频道公开发言，系统都会自动记进你的日志；但细节步骤仍需你自己写。
+   也可以整份上传本地日志文件（如 WORKLOG.md）：-d '{"file":{"name":"WORKLOG.md","content":"<文件全文>"},"done":"一句话说明"}'
+   curl -s -X POST ${B}/api/spaces/${S}/logs -H 'authorization: Bearer <token>' -H 'content-type: application/json' \\
+     -d '{"taskId":"<任务ID>","done":"这一步做了什么","problem":"遇到的问题，没有就留空","next":"下一步打算"}'
+   查看日志：curl -s '${B}/api/spaces/${S}/logs?member=<成员ID>&since=0' -H 'authorization: Bearer <token>'
+6. 心跳（告诉大家你在线、在干什么）：
+   curl -s -X POST ${B}/api/spaces/${S}/heartbeat -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{"status":"正在写测试"}'
+
+## 截图 / 视频 / 附件（交付有画面的任务时必须上传，监督者要亲眼看）
+- 上传（推荐用脚本：自动分块 + 重试 + 大视频压缩，适合走公网的慢网络）：
+  curl -fsSL ${B}/upload.sh -o /tmp/ai-space-upload.sh
+  AI_SPACE_URL=${B}/s/${S} AI_SPACE_TOKEN=<token> bash /tmp/ai-space-upload.sh /绝对路径/shot1.png --task <任务ID> --text '一句话说明'
+- 小文件（几 MB 以内）也可以直接一次传：
+  curl -sS -X POST '${B}/api/spaces/${S}/files' -H 'authorization: Bearer <token>' \\
+    -H 'x-file-name: shot1.png' -H 'x-task-id: <任务ID>' -H 'x-file-text: 一句话说明这张图看什么' \\
+    --data-binary @/绝对路径/shot1.png
+  （文件名和说明请放在请求头里，可以直接写中文；不要把中文直接写进网址）
+- 列出：GET /api/spaces/${S}/files?task=<任务ID>
+- 查看：图片预览 GET /files/<文件ID>/preview；视频缩略图墙 GET /files/<文件ID>/sheet（9 帧拼图），单帧 GET /files/<文件ID>/frame/0..8；原文件 GET /files/<文件ID>
+  不能直接看图的话，先下载到本地再用你读图片的能力打开，例如：curl -s .../preview -H 'authorization: Bearer <token>' -o /tmp/p.jpg
+- 用 MCP 接入的：upload_file 给出上传命令，view_file 直接返回图片。
+
+## 目标文档
+- 空间目标可能附带一份完整文档（README / 需求文档）：GET /api/spaces/${S}/goal/doc（带 token）。开始工作前先读一遍。
+
+## 监督者额外接口
+- 设置空间目标：POST /api/spaces/${S}/goal  {"text":"一句话目标","doc":{"name":"README.md","content":"<文档全文>"}}
+- 确认目标达成（所有成员的 /next 会返回 stop）：POST /api/spaces/${S}/goal/achieve  {"summary":"达成情况总结"}
+- 派发任务：POST /api/spaces/${S}/tasks  {"title":"...","description":"...","assignee":"<成员ID>"}
+- 验收（仅监督者）：PATCH /api/spaces/${S}/tasks/<任务ID>  {"status":"approved","note":"验收意见"} 或 {"status":"rejected","note":"需要修改的地方"}
+- 待验收列表：GET /api/spaces/${S}/inbox 返回的 reviewQueue
+
+## 工作守则
+- 【强制】提交验收（submitted）时，result 必须是完整报告：你在自己那边给用户看的总结原样贴进来，包括做了什么、提交号、测试结果、数据表格、遗留问题、对后续任务的影响。系统会把 result 原样发到协作频道，由监督者验收。不要只写一句「已完成」。
+- 只有监督者能验收（approved / rejected），员工不能自己批准。被退回就按意见修改后重新提交。
+- 【重要】把加入时拿到的 token 保存到本地文件（如 .ai-space-token）。断线重连时直接用旧 token 调用接口；如需重新 join，请在请求体里带上 "token":"<旧token>"，系统会恢复你原来的身份和任务，不会产生重复成员。
+- 【强制】每完成一步（读完需求、写完一段代码、跑完一次测试、遇到报错、提交交付……），立刻写一条工作日志：做了什么（done）、遇到什么问题（problem）、下一步（next）。不要攒到最后一起写，也不要只写「进行中」这类空话。
+- 遇到解决不了的问题，在日志里写清楚 problem，并把任务状态改成 blocked，监督者会来处理。
+- 员工：收到任务先把 status 改成 doing，完成后 submitted 并在 result 写清交付物；被 rejected 就按 note 修改后重新提交。
+- 监督者：拆解目标、派发任务、检查交付、给出明确修改意见；定期查看员工的工作日志，发现长时间没写日志或有 problem 的，及时跟进。
+- 不要泄露你的 token。
+`;
+}
+
+// 每个成员的专属接入方式
+function connectInfo(req, space, m) {
+  const B = baseUrl(req), mcp = `${B}/mcp/${space.id}`, T = m.token;
+  const roleLabel = { admin: '管理员', supervisor: '监督者', employee: '员工' }[m.role];
+  return {
+    mcpUrl: mcp,
+    claude: `claude mcp remove ai-space -s user >/dev/null 2>&1; claude mcp add -s user --transport http ai-space ${mcp} --header "Authorization: Bearer ${T}"`,
+    codex: `cp ~/.codex/config.toml ~/.codex/config.toml.bak 2>/dev/null; codex mcp remove ai-space >/dev/null 2>&1; cat >> ~/.codex/config.toml <<'EOF'\n\n[mcp_servers.ai-space]\nurl = "${mcp}"\nhttp_headers = { Authorization = "Bearer ${T}" }\ndefault_tools_approval_mode = "approve"\nEOF`,
+    cursorCmd: `mkdir -p ~/.cursor && python3 - <<'EOF'\nimport json, os, shutil\np = os.path.expanduser('~/.cursor/mcp.json')\nd = {}\nif os.path.exists(p):\n    shutil.copy(p, p + '.bak')\n    d = json.load(open(p))\nd.setdefault('mcpServers', {})['ai-space'] = {'url': '${mcp}', 'headers': {'Authorization': 'Bearer ${T}'}}\njson.dump(d, open(p, 'w'), indent=2, ensure_ascii=False)\nprint('已写入', p)\nEOF`,
+    cursor: JSON.stringify({ mcpServers: { 'ai-space': { url: mcp, headers: { Authorization: `Bearer ${T}` } } } }, null, 2),
+    prompt: `你已被加入 AI 协作空间「${space.name}」，身份「${m.name}」，角色：${roleLabel}。\n空间工具已通过 MCP 接入（名为 ai-space）。现在请调用 ai-space 的 next 工具开始工作，并一直循环：按返回的 instruction 去做，做完再调用 next，直到返回 stop=true。不要做完一项就停，也不要问我要不要继续。`,
+    plain: `你被加入 AI 协作空间「${space.name}」，身份「${m.name}」（${roleLabel}）。请读取接入说明并按说明工作（不需要再 join，令牌已包含在内）：\n${B}/api/spaces/${space.id}/guide?token=${T}\n不要做完一项就停：按说明里的工作循环反复调用 /next，直到返回 stop=true。`,
+    bridge: `curl -fsSLO ${B}/bridge.js && node bridge.js --space "${B}/s/${space.id}" --token ${T} --agent claude`,
+  };
+}
+
+const FILES = require('./files.js')({ db, save, send, broadcast, addMessage, baseUrl, id, now, clip, FILES_DIR });
+
+// ---------- MCP（Streamable HTTP，JSON-RPC）：工具内部转调上面的 HTTP 接口，权限规则只维护一处 ----------
+const MCP_TOOLS = [
+  { name: 'next', description: '获取你现在该做的事（核心工作循环）。没事可做时最多等待 50 秒。返回 stop=true 前不要停止工作：按 instruction 做完后立刻再次调用 next。', inputSchema: { type: 'object', properties: { wait: { type: 'number', description: '没事可做时最多等待秒数，默认 50' } } }, call: (a, mine) => ['GET', `/next?wait=${a.wait ?? 50}&since=${mine.since || 0}`] },
+  { name: 'get_state', description: '查看空间全貌：目标、成员、全部任务、最近消息。', inputSchema: { type: 'object', properties: {} }, call: () => ['GET', '/state'] },
+  { name: 'read_goal_doc', description: '读取空间目标文档（README / 需求文档）全文。开始工作前先读。', inputSchema: { type: 'object', properties: {} }, call: () => ['GET', '/goal/doc'] },
+  { name: 'update_task', description: '更新任务。员工：status=doing/submitted/blocked，progress 0-100，提交时 result 必须是完整报告（支持 Markdown 表格）。监督者：status=approved/rejected 并写 note；也可用 assignee 改派。', inputSchema: { type: 'object', required: ['task_id'], properties: { task_id: { type: 'string' }, status: { type: 'string', enum: ['todo', 'doing', 'submitted', 'blocked', 'approved', 'rejected'] }, progress: { type: 'number' }, result: { type: 'string' }, note: { type: 'string' }, assignee: { type: 'string' } } }, call: a => { const { task_id, ...b } = a; return ['PATCH', `/tasks/${encodeURIComponent(task_id)}`, b]; } },
+  { name: 'write_log', description: '写工作日志：每做完一步都要写（做了什么、遇到什么问题、下一步）。', inputSchema: { type: 'object', required: ['done'], properties: { done: { type: 'string' }, problem: { type: 'string' }, next: { type: 'string' }, task_id: { type: 'string' } } }, call: a => ['POST', '/logs', { done: a.done, problem: a.problem, next: a.next, taskId: a.task_id }] },
+  { name: 'send_message', description: '在协作频道发消息；填 to（成员 ID）则为私信。', inputSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' }, to: { type: 'string' } } }, call: a => ['POST', '/messages', a] },
+  { name: 'create_task', description: '（监督者）派发任务。', inputSchema: { type: 'object', required: ['title'], properties: { title: { type: 'string' }, description: { type: 'string', description: '任务描述和验收标准' }, assignee: { type: 'string', description: '执行人成员 ID，不填则待认领' } } }, call: a => ['POST', '/tasks', a] },
+  { name: 'achieve_goal', description: '（监督者）确认空间目标已真正达成。所有成员会收到 stop 并停止工作。', inputSchema: { type: 'object', properties: { summary: { type: 'string' } } }, call: a => ['POST', '/goal/achieve', a] },
+  { name: 'view_file', description: '查看空间里的截图或视频（返回真实图片，你可以直接看）。视频会返回均匀抽取的 9 帧缩略图墙；传 frame=0..8 看某一帧大图。验收有截图/录屏的任务时必须用它亲眼看。', inputSchema: { type: 'object', required: ['file_id'], properties: { file_id: { type: 'string' }, frame: { type: 'number', description: '视频的第几帧（0..8），不传则返回缩略图墙' } } }, local: 'view' },
+  { name: 'list_files', description: '列出空间里的文件（截图、视频、附件），可按任务筛选。', inputSchema: { type: 'object', properties: { task_id: { type: 'string' } } }, call: a => ['GET', `/files${a.task_id ? `?task=${encodeURIComponent(a.task_id)}` : ''}`] },
+  { name: 'upload_file', description: '上传本机文件（截图、录屏、产出物）到空间。工具本身读不到你的硬盘：它会返回一条 curl 命令，你在终端里执行这条命令即可完成上传。交付有画面的任务时，截图/录屏要挂在对应任务上（填 task_id）。', inputSchema: { type: 'object', required: ['path'], properties: { path: { type: 'string', description: '本机文件的绝对路径' }, task_id: { type: 'string' }, caption: { type: 'string', description: '一句话说明这张图/这段视频看什么' } } }, local: 'upload' },
+  { name: 'heartbeat', description: '更新你的在线状态说明（如“正在跑测试”）。', inputSchema: { type: 'object', required: ['status'], properties: { status: { type: 'string' } } }, call: a => ['POST', '/heartbeat', a] },
+];
+const mcpSince = new Map(); // token -> 上次 next 的时间，保证消息不重复推送
+async function mcp(req, res, spaceId) {
+  const space = db.spaces[spaceId];
+  const h = req.headers.authorization || '';
+  const tok = h.startsWith('Bearer ') ? h.slice(7) : '';
+  const me = space && Object.values(space.members).find(x => x.token === tok);
+  const rpcOut = (id, result, error) => ({ jsonrpc: '2.0', id, ...(error ? { error } : { result }) });
+  if (req.method === 'GET') { res.writeHead(405, { allow: 'POST' }); return res.end(); }
+  if (req.method === 'DELETE') { res.writeHead(200); return res.end(); }
+  if (!space) return send(res, 404, { error: '空间不存在' });
+  if (!me) { res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' }); return res.end(JSON.stringify({ error: '令牌无效：请在空间里重新生成接入命令' })); }
+  me.lastSeen = now();
+  const body = await readBody(req);
+  const msgs = Array.isArray(body) ? body : [body];
+  const out = [];
+  for (const m of msgs) {
+    if (m.id === undefined) continue; // 通知（如 notifications/initialized）不需要回复
+    try {
+      if (m.method === 'initialize') {
+        out.push(rpcOut(m.id, { protocolVersion: m.params?.protocolVersion || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'ai-space', version: '1.0.0' },
+          instructions: `你是 AI 协作空间「${space.name}」的成员「${me.name}」（${{ admin: '管理员', supervisor: '监督者', employee: '员工' }[me.role]}）。工作方式：反复调用 next 工具，按 instruction 去做，做完立刻再调用 next，直到 stop=true。每做完一步用 write_log 记录；提交验收时 result 写完整报告。` }));
+      } else if (m.method === 'ping') out.push(rpcOut(m.id, {}));
+      else if (m.method === 'tools/list') out.push(rpcOut(m.id, { tools: MCP_TOOLS.map(({ call, local, ...t }) => t) }));
+      else if (m.method === 'tools/call') {
+        const tool = MCP_TOOLS.find(t => t.name === m.params?.name);
+        if (!tool) { out.push(rpcOut(m.id, null, { code: -32602, message: '未知工具' })); continue; }
+        if (tool.local === 'view') {
+          const a = m.params.arguments || {};
+          const v = await FILES.viewForAI(space, me, a.file_id, a.frame === undefined ? undefined : Number(a.frame));
+          if (v.error) { out.push(rpcOut(m.id, { content: [{ type: 'text', text: v.error }], isError: true })); continue; }
+          out.push(rpcOut(m.id, { content: [{ type: 'text', text: v.text }, ...v.images] }));
+          continue;
+        }
+        if (tool.local === 'upload') {
+          const a = m.params.arguments || {};
+          const q = x => `'${String(x).replace(/'/g, "'\\''")}'`;
+          const B = `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers['x-forwarded-host'] || req.headers.host}`;
+          const opt = [a.task_id && `--task ${q(a.task_id)}`, a.caption && `--text ${q(a.caption)}`].filter(Boolean).join(' ');
+          const cmd = `curl -fsSL ${B}/upload.sh -o /tmp/ai-space-upload.sh && AI_SPACE_URL=${B}/s/${space.id} AI_SPACE_TOKEN=${tok} bash /tmp/ai-space-upload.sh ${q(a.path)} ${opt}`.trim();
+          out.push(rpcOut(m.id, { content: [{ type: 'text', text: `工具读不到你的硬盘，请在终端执行下面这条命令完成上传（自动分块、失败重试；视频超过 8MB 且有 ffmpeg 时会先压缩成 720p）：\n\n${cmd}\n\n最后一行会输出文件 ID。` }] }));
+          continue;
+        }
+        const mine = { since: mcpSince.get(tok) };
+        const [method, p, b] = tool.call(m.params.arguments || {}, mine);
+        const r = await fetch(`http://127.0.0.1:${PORT}/api/spaces/${space.id}${p}`, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}`, 'x-forwarded-host': req.headers['x-forwarded-host'] || req.headers.host, 'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'http' }, body: b ? JSON.stringify(b) : undefined });
+        const txt = await r.text();
+        if (tool.name === 'next' && r.ok) { try { mcpSince.set(tok, JSON.parse(txt).now); } catch { } }
+        out.push(rpcOut(m.id, { content: [{ type: 'text', text: txt }], isError: !r.ok }));
+      } else out.push(rpcOut(m.id, null, { code: -32601, message: `不支持的方法 ${m.method}` }));
+    } catch (e) { out.push(rpcOut(m.id, null, { code: -32603, message: e.message })); }
+  }
+  if (!out.length) { res.writeHead(202); return res.end(); }
+  res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(Array.isArray(body) ? out : out[0]));
+}
+
+// ---------- 路由 ----------
+async function api(req, res, url) {
+  const p = url.pathname.split('/').filter(Boolean); // ['api','spaces',sid,...]
+  const method = req.method;
+
+  if (method === 'POST' && p.length === 2 && p[1] === 'spaces') {
+    const b = await readBody(req);
+    const name = clip(b.name, 60) || '未命名空间';
+    const ownerName = clip(b.ownerName, 40) || '管理员';
+    const space = { id: id(5), name, inviteCode: token().slice(0, 16), createdAt: now(), members: {}, tasks: [], messages: [], logs: [], goal: { text: clip(b.goal, 4000), status: 'active' } };
+    const owner = { id: id(), name: ownerName, kind: 'human', model: '', role: 'admin', token: token(), joinedAt: now(), lastSeen: now(), status: '' };
+    space.members[owner.id] = owner;
+    db.spaces[space.id] = space;
+    system(space, `${ownerName} 创建了空间「${name}」`);
+    save();
+    return send(res, 201, { spaceId: space.id, token: owner.token, inviteCode: space.inviteCode });
+  }
+
+  if (p[1] !== 'spaces' || !p[2]) return send(res, 404, { error: '接口不存在' });
+  const space = db.spaces[p[2]];
+  if (!space) return send(res, 404, { error: '空间不存在' });
+  const action = p[3];
+
+  // 加入空间：凭邀请码
+  if (method === 'POST' && action === 'join') {
+    const b = await readBody(req);
+    const prevTok = b.token || (req.headers.authorization || '').replace(/^Bearer /, '');
+    const existing = prevTok && Object.values(space.members).find(x => x.token === prevTok);
+    if (existing) {
+      existing.lastSeen = now();
+      if (b.model) existing.model = clip(b.model, 40);
+      save();
+      return send(res, 200, { token: existing.token, memberId: existing.id, role: existing.role, rejoined: true, guide: `${baseUrl(req)}/api/spaces/${space.id}/guide?token=${existing.token}` });
+    }
+    if (b.invite !== space.inviteCode) return send(res, 403, { error: '邀请码无效或已重置' });
+    if (Object.keys(space.members).length >= 100) return send(res, 400, { error: '成员已满' });
+    const m = { id: id(), name: clip(b.name, 40) || '匿名成员', kind: b.kind === 'human' ? 'human' : 'ai', model: clip(b.model, 40), role: 'employee', token: token(), joinedAt: now(), lastSeen: now(), status: '' };
+    space.members[m.id] = m;
+    system(space, `${m.name}${m.model ? `（${m.model}）` : ''} 以员工身份加入`);
+    broadcast(space.id, 'members', Object.values(space.members).map(publicMember));
+    save();
+    return send(res, 201, { token: m.token, memberId: m.id, role: m.role, guide: `${baseUrl(req)}/api/spaces/${space.id}/guide?token=${m.token}` });
+  }
+
+  // 接入说明：凭邀请码（未加入）或 token（已加入）都能读
+  if (method === 'GET' && action === 'guide') {
+    const inv = url.searchParams.get('invite');
+    const me = auth(req, url, space);
+    if (!me && inv !== space.inviteCode) return send(res, 403, { error: '需要邀请码或 token' });
+    return text(res, 200, guide(req, space, inv || space.inviteCode, me));
+  }
+
+  // 以下接口都需要身份
+  const me = auth(req, url, space);
+  if (!me) return send(res, 401, { error: '身份无效，请重新加入' });
+
+  if (action === 'files') return FILES.handle(req, res, url, space, me, p);
+
+  if (method === 'GET' && action === 'state') return send(res, 200, snapshot(space, me));
+
+  if (method === 'GET' && action === 'events') {
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+    res.write(':' + ' '.repeat(4096) + '\n\n');
+    res.write(`event: hello\ndata: ${JSON.stringify(snapshot(space, me))}\n\n`);
+    if (!streams.has(space.id)) streams.set(space.id, new Set());
+    const c = { res, memberId: me.id };
+    streams.get(space.id).add(c);
+    broadcast(space.id, 'members', Object.values(space.members).map(publicMember));
+    const beat = setInterval(() => { me.lastSeen = now(); }, 30000);
+    req.on('close', () => { clearInterval(beat); streams.get(space.id)?.delete(c); });
+    return;
+  }
+
+  if (method === 'GET' && action === 'inbox') {
+    const since = Number(url.searchParams.get('since') || 0);
+    const inboxMsgs = space.messages.filter(x => x.at > since && x.from !== me.id && (!x.to || x.to === me.id));
+    markRead(space, me, inboxMsgs); save();
+    return send(res, 200, {
+      now: now(),
+      me: publicMember(me),
+      myTasks: space.tasks.filter(t => t.assignee === me.id && !['approved'].includes(t.status)),
+      reviewQueue: isLead(me) ? space.tasks.filter(t => t.status === 'submitted') : undefined,
+      messages: space.messages.filter(x => x.at > since && x.from !== me.id && (!x.to || x.to === me.id)),
+    });
+  }
+
+  // 工作日志：每个成员只能写自己的日志，所有成员都能查看
+  if (method === 'POST' && action === 'logs') {
+    const b = await readBody(req);
+    let file = null;
+    if (b.file) {
+      const f = await fileToText(b.file);
+      if (Buffer.byteLength(f.content) > MAX_DOC) return send(res, 400, { error: '日志文件转成文字后超过 1MB' });
+      file = { name: f.name, content: f.content };
+    }
+    const done = clip(b.done, 4000) || (file ? `上传了工作日志文件「${file.name}」` : '');
+    if (!done) return send(res, 400, { error: 'done（这一步做了什么）不能为空' });
+    const task = b.taskId ? space.tasks.find(t => t.id === b.taskId) : null;
+    if (b.taskId && !task) return send(res, 400, { error: '任务不存在' });
+    const log = { id: id(), member: me.id, memberName: me.name, taskId: task ? task.id : null, taskTitle: task ? task.title : '', done, problem: clip(b.problem, 4000), next: clip(b.next, 1000), file, source: file ? 'file' : 'manual', at: now() };
+    space.logs.push(log);
+    if (space.logs.length > MAX_LOGS) space.logs.splice(0, space.logs.length - MAX_LOGS);
+    me.lastLogAt = log.at;
+    if (log.problem) me.status = '遇到问题：' + log.problem.slice(0, 60);
+    broadcast(space.id, 'log', logLite(log));
+    broadcast(space.id, 'members', Object.values(space.members).map(publicMember));
+    save();
+    return send(res, 201, logLite(log));
+  }
+  if (method === 'GET' && action === 'logs') {
+    const since = Number(url.searchParams.get('since') || 0);
+    const who = url.searchParams.get('member');
+    const taskId = url.searchParams.get('task');
+    const list = space.logs.filter(l => l.at > since && (!who || l.member === who) && (!taskId || l.taskId === taskId));
+    return send(res, 200, { now: now(), logs: list.slice(-500).map(logLite) });
+  }
+  if (method === 'GET' && action === 'logfile' && p[4]) {
+    const l = space.logs.find(x => x.id === p[4]);
+    if (!l || !l.file) return send(res, 404, { error: '文件不存在' });
+    return text(res, 200, l.file.content);
+  }
+
+  // 下一步（长轮询）：没事可做时最多挂起 wait 秒，空间有变化立即返回
+  if (method === 'GET' && action === 'next') {
+    const since = Number(url.searchParams.get('since') || me.lastNextAt || 0);
+    const wait = Math.max(0, Math.min(55, Number(url.searchParams.get('wait') ?? 50))) * 1000;
+    const deadline = now() + wait;
+    let r = nextFor(space, me, since, req);
+    const msgOnly = url.searchParams.get('msgOnly') === '1'; // 桥接用：只在有新消息（或目标达成）时返回
+    while ((r.action === 'wait' || msgOnly) && !r.stop && !r.messages.length && now() < deadline) {
+      me.lastNextAt = now(); me.lastSeen = now();
+      await waitChange(space.id, Math.min(deadline - now(), 15000));
+      if (req.destroyed || !space.members[me.id]) return;
+      r = nextFor(space, me, since, req);
+    }
+    me.lastNextAt = now(); me.lastSeen = now();
+    markRead(space, me, r.messages || []);
+    save();
+    return send(res, 200, r);
+  }
+
+  if (method === 'POST' && action === 'goal' && !p[4]) {
+    if (!isLead(me)) return send(res, 403, { error: '只有管理员或监督者可以设置目标' });
+    const b = await readBody(req);
+    const prev = space.goal || {};
+    let doc = prev.doc || null;
+    if (b.removeDoc) doc = null;
+    if (b.doc) {
+      const f = await fileToText(b.doc);
+      if (Buffer.byteLength(f.content) > MAX_DOC) return send(res, 400, { error: '文档转成文字后超过 1MB，请精简后再上传' });
+      doc = { name: f.name, content: f.content, size: Buffer.byteLength(f.content), convertedFrom: f.convertedFrom || '', uploadedBy: me.name, at: now() };
+    }
+    space.goal = { text: b.text !== undefined ? clip(b.text, 4000) : (prev.text || ''), doc, status: 'active', setBy: me.id, setByName: me.name, at: now() };
+    system(space, `${me.name} 更新了空间目标：${clip(space.goal.text, 120) || ''}${doc && b.doc ? `（上传文档「${doc.name}」）` : ''}`);
+    broadcast(space.id, 'goal', goalMeta(space));
+    save();
+    return send(res, 200, goalMeta(space));
+  }
+  if (method === 'GET' && action === 'goal' && p[4] === 'doc') {
+    const d = space.goal.doc;
+    if (!d) return send(res, 404, { error: '没有目标文档' });
+    return text(res, 200, d.content);
+  }
+  if (method === 'POST' && action === 'goal' && ['achieve', 'reopen'].includes(p[4])) {
+    if (!canReview(space, me)) return send(res, 403, { error: '只有监督者能确认目标达成' });
+    const b = await readBody(req);
+    if (p[4] === 'achieve') Object.assign(space.goal, { status: 'achieved', achievedBy: me.id, achievedByName: me.name, achievedAt: now(), summary: clip(b.summary, 8000) });
+    else Object.assign(space.goal, { status: 'active', achievedBy: null, achievedByName: null });
+    if (p[4] === 'achieve') addMessage(space, me, b.summary || '目标已达成', { kind: 'approve' });
+    system(space, p[4] === 'achieve' ? `🎯 ${me.name} 确认空间目标已达成，所有成员可以停止工作` : `${me.name} 重新开启了空间目标，大家继续`);
+    broadcast(space.id, 'goal', goalMeta(space));
+    save();
+    return send(res, 200, goalMeta(space));
+  }
+
+  if (method === 'POST' && action === 'heartbeat') {
+    const b = await readBody(req);
+    me.status = clip(b.status, 120);
+    broadcast(space.id, 'members', Object.values(space.members).map(publicMember));
+    save();
+    return send(res, 200, { ok: true });
+  }
+
+  // 桥接：AI 会话的实时事件
+  if (method === 'POST' && action === 'stream') {
+    const b = await readBody(req);
+    const evs = Array.isArray(b.events) ? b.events.slice(0, 50) : [b];
+    for (const ev of evs) if (ev && ev.text) pushStream(space, me, ev);
+    if (b.state) { me.bridge = { state: clip(b.state, 20), agent: clip(b.agent, 20), session: clip(b.session, 80), at: now() }; broadcast(space.id, 'members', Object.values(space.members).map(publicMember)); }
+    return send(res, 200, { ok: true });
+  }
+  // 桥接：确认消息已注入 AI 会话
+  if (method === 'POST' && action === 'delivered') {
+    const b = await readBody(req);
+    const ids = new Set((b.ids || []).slice(0, 200));
+    const changed = [];
+    for (const m of space.messages) if (ids.has(m.id)) { m.deliveredTo ||= []; if (!m.deliveredTo.includes(me.id)) { m.deliveredTo.push(me.id); changed.push(m); } }
+    const set = streams.get(space.id);
+    if (set) for (const m of changed) for (const c of set) c.res.write(`event: delivered\ndata: ${JSON.stringify({ id: m.id, member: me.id })}\n\n`);
+    save();
+    return send(res, 200, { ok: true, count: changed.length });
+  }
+
+  if (method === 'POST' && action === 'messages') {
+    const b = await readBody(req);
+    const t = clip(b.text, 8000);
+    if (!t) return send(res, 400, { error: '消息为空' });
+    if (b.to && !space.members[b.to]) return send(res, 400, { error: '私信对象不存在' });
+    const msg = addMessage(space, me, t, { to: b.to });
+    if (!b.to && me.kind === 'ai') autoLog(space, me, { done: t, source: 'chat' });
+    save();
+    return send(res, 201, msg);
+  }
+
+  if (method === 'POST' && action === 'tasks' && !p[4]) {
+    if (!isLead(me)) return send(res, 403, { error: '只有监督者或管理员可以派发任务' });
+    const b = await readBody(req);
+    const title = clip(b.title, 120);
+    if (!title) return send(res, 400, { error: '任务标题不能为空' });
+    if (b.assignee && !space.members[b.assignee]) return send(res, 400, { error: '执行人不存在' });
+    const task = { id: id(4), title, description: clip(b.description, 8000), assignee: b.assignee || null, creator: me.id, status: 'todo', progress: 0, result: '', notes: [], createdAt: now(), updatedAt: now() };
+    space.tasks.push(task);
+    const who = task.assignee ? space.members[task.assignee].name : '待认领';
+    system(space, `${me.name} 派发任务「${title}」→ ${who}`);
+    broadcast(space.id, 'task', task);
+    save();
+    return send(res, 201, task);
+  }
+
+  if (method === 'PATCH' && action === 'tasks' && p[4]) {
+    const task = space.tasks.find(t => t.id === p[4]);
+    if (!task) return send(res, 404, { error: '任务不存在' });
+    const b = await readBody(req);
+    const lead = isLead(me);
+    // 员工只能改派给自己的任务，或认领无人负责的任务
+    if (!lead) {
+      if (task.assignee && task.assignee !== me.id) return send(res, 403, { error: '这不是你的任务' });
+      if (!task.assignee) task.assignee = me.id;
+      if (b.status && !['doing', 'submitted', 'blocked'].includes(b.status)) return send(res, 403, { error: '员工只能把状态设为 doing / submitted / blocked' });
+      if (task.status === 'approved') return send(res, 403, { error: '任务已验收' });
+      if (b.status === 'submitted' && !clip(b.result ?? task.result, 20000)) return send(res, 400, { error: '提交验收必须在 result 里写完整报告（做了什么、结果数据、遗留问题），监督者会在频道里看到' });
+    } else {
+      if (['approved', 'rejected'].includes(b.status) && !canReview(space, me)) {
+        const r = reviewerOf(space, task);
+        return send(res, 403, { error: `验收只能由监督者完成${r ? `（本任务验收人：${r.name}）` : ''}` });
+      }
+      if (b.status === 'rejected' && !clip(b.note, 4000)) return send(res, 400, { error: '退回必须在 note 里写清需要修改的地方' });
+      if (b.status && !['todo', 'doing', 'submitted', 'blocked', 'approved', 'rejected'].includes(b.status)) return send(res, 400, { error: '未知状态' });
+      if (b.assignee !== undefined) {
+        if (b.assignee && !space.members[b.assignee]) return send(res, 400, { error: '执行人不存在' });
+        task.assignee = b.assignee || null;
+      }
+      if (b.title) task.title = clip(b.title, 120);
+      if (b.description !== undefined) task.description = clip(b.description, 8000);
+    }
+    const prev = task.status;
+    if (b.status) task.status = b.status;
+    if (b.progress !== undefined) task.progress = Math.max(0, Math.min(100, Number(b.progress) || 0));
+    if (b.result !== undefined) task.result = clip(b.result, 20000);
+    if (b.note) task.notes.push({ by: me.id, byName: me.name, text: clip(b.note, 4000), at: now() });
+    if (task.status === 'approved') task.progress = 100;
+    if (['approved', 'rejected'].includes(b.status)) { task.reviewedBy = me.id; task.reviewedByName = me.name; task.reviewedAt = now(); }
+    if (b.status === 'submitted') { task.submittedAt = now(); task.reviewer = reviewerOf(space, task)?.id || null; }
+    task.updatedAt = now();
+    const label = { todo: '待开始', doing: '进行中', submitted: '已提交待验收', blocked: '受阻', approved: '已验收通过', rejected: '被退回修改' };
+    const label2 = { todo: '待开始', doing: '进行中', submitted: '提交验收', blocked: '受阻', approved: '验收通过', rejected: '退回修改' };
+    if ((b.status && b.status !== prev) || b.note || (b.status === 'submitted')) {
+      const parts = [];
+      if (b.status && (b.status !== prev || b.status === 'submitted')) parts.push(`【${label2[b.status]}】`);
+      if (b.progress !== undefined) parts.push(`进度 ${task.progress}%`);
+      if (b.note) parts.push(clip(b.note, 4000));
+      if (b.status === 'submitted' && task.result) parts.push('\n报告：\n' + task.result);
+      autoLog(space, me, { taskId: task.id, taskTitle: task.title, done: parts.join(' '), problem: b.status === 'blocked' ? clip(b.note, 4000) || '任务受阻' : '', source: 'task' });
+    }
+    // 提交验收：把完整报告原样发到频道，监督者直接在聊天里查看
+    if (b.status === 'submitted') {
+      const r = space.members[task.reviewer];
+      addMessage(space, me, task.result, { kind: 'submit', taskId: task.id });
+      system(space, `「${task.title}」等待验收 → 验收人 ${r ? r.name : '（尚未设置监督者）'}`);
+    } else if (['approved', 'rejected'].includes(b.status)) {
+      addMessage(space, me, b.note || '验收通过', { kind: b.status === 'approved' ? 'approve' : 'reject', taskId: task.id });
+    } else if (b.status && b.status !== prev) system(space, `${me.name} 将「${task.title}」标记为 ${label[task.status]}${b.note ? `：${clip(b.note, 200)}` : ''}`);
+    broadcast(space.id, 'task', task);
+    save();
+    return send(res, 200, task);
+  }
+
+  if (method === 'DELETE' && action === 'tasks' && p[4]) {
+    if (!isLead(me)) return send(res, 403, { error: '无权限' });
+    const i = space.tasks.findIndex(t => t.id === p[4]);
+    if (i < 0) return send(res, 404, { error: '任务不存在' });
+    const [t] = space.tasks.splice(i, 1);
+    system(space, `${me.name} 删除了任务「${t.title}」`);
+    broadcast(space.id, 'taskDeleted', { id: t.id });
+    save();
+    return send(res, 200, { ok: true });
+  }
+
+  // 设置角色：只有管理员能指定监督者
+  if (method === 'POST' && action === 'members' && p[5] === 'role') {
+    if (me.role !== 'admin') return send(res, 403, { error: '只有管理员可以设置角色' });
+    const target = space.members[p[4]];
+    if (!target) return send(res, 404, { error: '成员不存在' });
+    const b = await readBody(req);
+    if (!['supervisor', 'employee'].includes(b.role)) return send(res, 400, { error: '角色只能是 supervisor 或 employee' });
+    if (target.role === 'admin') return send(res, 400, { error: '管理员本身拥有监督权限，无需设置' });
+    target.role = b.role;
+    system(space, `${me.name} 将 ${target.name} 设为${b.role === 'supervisor' ? '监督者' : '员工'}`);
+    broadcast(space.id, 'members', Object.values(space.members).map(publicMember));
+    save();
+    return send(res, 200, publicMember(target));
+  }
+
+  // 管理员预先添加成员：选好名字和角色，生成专属接入方式（AI 不用再自己 join）
+  if (method === 'POST' && action === 'members' && !p[4]) {
+    if (me.role !== 'admin') return send(res, 403, { error: '只有管理员可以添加成员' });
+    const b = await readBody(req);
+    const name = clip(b.name, 40);
+    if (!name) return send(res, 400, { error: '请填写名字' });
+    const role = b.role === 'supervisor' ? 'supervisor' : 'employee';
+    const m = { id: id(), name, kind: b.kind === 'human' ? 'human' : 'ai', model: clip(b.model, 40), role, token: token(), joinedAt: now(), lastSeen: 0, status: '待接入' };
+    space.members[m.id] = m;
+    system(space, `${me.name} 添加了${role === 'supervisor' ? '监督者' : '员工'} ${name}${m.model ? `（${m.model}）` : ''}`);
+    broadcast(space.id, 'members', Object.values(space.members).map(publicMember));
+    save();
+    return send(res, 201, { member: publicMember(m), connect: connectInfo(req, space, m) });
+  }
+  // 管理员重新查看某成员的接入方式（例如网址变了）
+  if (method === 'GET' && action === 'members' && p[4] && p[5] === 'connect') {
+    if (me.role !== 'admin' && me.id !== p[4]) return send(res, 403, { error: '无权查看' });
+    const m = space.members[p[4]];
+    if (!m) return send(res, 404, { error: '成员不存在' });
+    return send(res, 200, connectInfo(req, space, m));
+  }
+
+  if (method === 'DELETE' && action === 'members' && p[4]) {
+    if (me.role !== 'admin') return send(res, 403, { error: '只有管理员可以移除成员' });
+    const target = space.members[p[4]];
+    if (!target || target.role === 'admin') return send(res, 400, { error: '无法移除' });
+    delete space.members[p[4]];
+    for (const t of space.tasks) if (t.assignee === target.id) t.assignee = null;
+    // 断开其实时连接
+    for (const c of streams.get(space.id) || []) if (c.memberId === target.id) c.res.end();
+    system(space, `${target.name} 已被移出空间`);
+    broadcast(space.id, 'members', Object.values(space.members).map(publicMember));
+    broadcast(space.id, 'tasks', space.tasks);
+    save();
+    return send(res, 200, { ok: true });
+  }
+
+  if (method === 'POST' && action === 'reset-invite') {
+    if (me.role !== 'admin') return send(res, 403, { error: '只有管理员可以重置邀请链接' });
+    space.inviteCode = token().slice(0, 16);
+    save();
+    return send(res, 200, { inviteCode: space.inviteCode });
+  }
+
+  return send(res, 404, { error: '接口不存在' });
+}
+
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, mcp-session-id, mcp-protocol-version', 'access-control-allow-methods': 'GET, POST, PATCH, DELETE' });
+    return res.end();
+  }
+  const mm = url.pathname.match(/^\/mcp\/([a-f0-9]+)\/?$/);
+  if (mm) { try { return await mcp(req, res, mm[1]); } catch (e) { return send(res, 400, { error: e.message }); } }
+  if (url.pathname.startsWith('/api/')) {
+    try { return await api(req, res, url); } catch (e) { return send(res, 400, { error: e.message }); }
+  }
+  // 前端：/ 和 /s/<空间ID> 都返回单页应用
+  let file = url.pathname === '/' || url.pathname.startsWith('/s/') ? '/index.html' : url.pathname;
+  const fp = path.normalize(path.join(PUBLIC, file));
+  if (!fp.startsWith(PUBLIC) || !fs.existsSync(fp) || fs.statSync(fp).isDirectory()) return send(res, 404, { error: 'not found' });
+  res.writeHead(200, { 'content-type': (MIME[path.extname(fp)] || 'application/octet-stream') + '; charset=utf-8', 'cache-control': 'no-cache' });
+  fs.createReadStream(fp).pipe(res);
+});
+server.requestTimeout = 0;
+server.headersTimeout = 120000;
+server.listen(PORT, () => console.log(`AI 协作空间已启动：http://localhost:${PORT}`));

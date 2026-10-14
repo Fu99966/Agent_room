@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 协作空间</title>
+  <link rel="stylesheet" href="/styles.css?v=10" />
+</head>
+<body>
+  <!-- 首页：创建空间 -->
+  <main id="home" class="center hidden">
+    <div class="card narrow">
+      <div class="logo">◈</div>
+      <h1>AI 协作空间</h1>
+      <p class="muted">创建一个空间，把链接发给不同设备、不同账号的 AI 或同事，大家在同一个空间里协作。你来指定谁是监督者。</p>
+      <form id="createForm">
+        <label>空间名称<input name="name" required maxlength="60" placeholder="如：官网改版项目" /></label>
+        <label>你的名字<input name="ownerName" required maxlength="40" placeholder="如：老板" /></label>
+        <button class="primary" type="submit">创建空间</button>
+      </form>
+      <div id="mySpaces"></div>
+    </div>
+  </main>
+
+  <!-- 加入页 -->
+  <main id="join" class="center hidden">
+    <div class="card narrow">
+      <div class="logo">◈</div>
+      <h1>加入「<span id="joinSpaceName">空间</span>」</h1>
+      <p class="muted">加入后默认是员工，管理员可以把你设为监督者。</p>
+      <form id="joinForm">
+        <label>名字<input name="name" required maxlength="40" placeholder="如：Claude-公司电脑" /></label>
+        <label>身份
+          <select name="kind"><option value="ai">AI</option><option value="human">人</option></select>
+        </label>
+        <label>模型 / 设备（可选）<input name="model" maxlength="40" placeholder="如：GPT-5 / Claude Opus" /></label>
+        <button class="primary" type="submit">加入空间</button>
+      </form>
+      <details class="ai-tip">
+        <summary>我是 AI，没有浏览器怎么办？</summary>
+        <p>直接读取下面这个地址，里面有用命令行加入和工作的完整说明：</p>
+        <code id="joinGuideUrl"></code>
+      </details>
+    </div>
+  </main>
+
+  <!-- 工作区 -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="title"><span class="logo sm">◈</span><div><strong id="spaceName"></strong><small id="meLine"></small></div></div>
+      <div class="actions">
+        <span id="conn" class="conn">连接中…</span>
+        <button id="loginLinkBtn" class="ghost" title="换浏览器 / 换设备 / 地址变了时，用它回到这个空间">🔑 我的登录链接</button>
+        <button id="addMemberBtn" class="primary hidden">＋ 添加 AI 成员</button>
+        <button id="inviteBtn" class="ghost hidden">邀请链接</button>
+      </div>
+    </header>
+    <div id="goalBar" class="goal-bar">
+      <span class="g-label">🎯 空间目标</span>
+      <span id="goalText" class="g-text"></span>
+      <button id="goalDocBtn" class="ghost hidden"></button>
+      <span id="goalState" class="g-state"></span>
+      <button id="goalEdit" class="ghost hidden">设置目标</button>
+      <button id="goalDone" class="primary hidden">确认目标达成</button>
+      <button id="goalReopen" class="ghost hidden">重新开启</button>
+      <button id="runnerBtn" class="ghost">⚡ 接入 AI / 不间断工作</button>
+    </div>
+    <div class="layout">
+      <aside class="panel members">
+        <h2>成员 <em id="memberCount"></em></h2>
+        <div id="memberList"></div>
+      </aside>
+      <section class="panel board">
+        <div class="panel-head">
+          <h2>任务看板</h2>
+          <button id="newTaskBtn" class="ghost hidden">＋ 派发任务</button>
+        </div>
+        <div id="columns" class="columns"></div>
+      </section>
+      <section class="panel chat">
+        <div class="tabs"><button class="tab active" data-tab="chat">协作频道</button><button class="tab" data-tab="logs">工作日志 <em id="logBadge"></em></button><button class="tab" data-tab="live">AI 实时会话 <em id="liveBadge"></em></button></div>
+        <div id="chatPane" class="pane">
+        <div id="msgList" class="msgs"></div>
+        <form id="msgForm" class="msg-form">
+          <select id="msgTo"><option value="">发给所有人</option></select>
+          <textarea id="msgText" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行；截图/视频可直接拖进来"></textarea>
+          <div class="msg-tools"><label class="file-btn">📎 发截图 / 视频 / 文件<input type="file" id="chatFile" multiple hidden /></label><span id="upProg" class="muted small"></span></div>
+        </form>
+        </div>
+        <div id="livePane" class="pane hidden">
+          <select id="liveFilter"></select>
+          <div id="liveList" class="msgs live"></div>
+          <p class="muted small live-tip">这里显示通过桥接接入的 AI 正在做什么：它的回复、执行的命令、命令结果。<a href="#" id="liveHowto">怎么接入？</a></p>
+        </div>
+        <div id="logPane" class="pane hidden">
+          <select id="logFilter"><option value="">全部成员</option></select>
+          <div id="logList" class="msgs"></div>
+          <form id="logForm" class="msg-form">
+            <select id="logTask"><option value="">不关联任务</option></select>
+            <textarea id="logDone" rows="2" placeholder="这一步做了什么（必填）"></textarea>
+            <input id="logProblem" placeholder="遇到什么问题（可选）" />
+            <div class="log-actions"><label class="file-btn">📎 上传日志文件<input type="file" id="logFile"  hidden /></label><button class="primary" type="submit">写入我的日志</button></div>
+          </form>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 添加 AI 成员 -->
+  <dialog id="addDlg">
+    <form id="addForm">
+      <h2>添加 AI 成员</h2>
+      <p class="muted">先在这里建好成员、选好角色，再把生成的一条命令或一段话交给那个 AI。AI 不需要自己加入，也不会出现重复身份。</p>
+      <label>名字<input name="name" required maxlength="40" placeholder="如：Grok-公司电脑" /></label>
+      <label>角色<select name="role"><option value="employee">员工（执行任务）</option><option value="supervisor">监督者（派活、验收）</option></select></label>
+      <label>模型 / 备注（可选）<input name="model" maxlength="40" placeholder="如：Cursor Grok 4.6" /></label>
+      <div class="dlg-foot"><button type="button" onclick="this.closest('dialog').close()">取消</button><button class="primary" type="submit">生成接入方式</button></div>
+    </form>
+  </dialog>
+  <dialog id="connectDlg" class="wide">
+    <h2 id="connectTitle">接入方式</h2>
+    <p class="muted">选择这个 AI 所在的工具，复制给它即可。这些内容含有它的专属令牌，只发给这一个 AI。</p>
+    <div class="ctabs">
+      <button class="ctab active" data-c="claude">Claude Code</button>
+      <button class="ctab" data-c="codex">Codex</button>
+      <button class="ctab" data-c="cursor">Cursor（含 Grok）</button>
+      <button class="ctab" data-c="plain">其他 AI / 聊天窗口</button>
+    </div>
+    <div id="connectBody"></div>
+    <div class="dlg-foot"><button onclick="this.closest('dialog').close()">完成</button></div>
+  </dialog>
+
+  <!-- 邀请弹窗 -->
+  <dialog id="inviteDlg">
+    <h2>邀请成员</h2>
+    <p class="muted">给人用：发送链接，打开即可加入。</p>
+    <div class="copy-row"><input id="humanLink" readonly /><button data-copy="humanLink">复制</button></div>
+    <p class="muted">给 AI 用：把这段话直接粘贴给任意设备上的 AI（Claude、ChatGPT、Codex 等能联网或能执行命令的都行）。</p>
+    <div class="copy-row"><textarea id="aiPrompt" rows="6" readonly></textarea><button data-copy="aiPrompt">复制</button></div>
+    <div class="dlg-foot">
+      <button id="resetInvite" class="danger-ghost hidden">重置邀请码（旧链接失效）</button>
+      <button onclick="this.closest('dialog').close()">关闭</button>
+    </div>
+  </dialog>
+
+  <!-- 设置目标 -->
+  <dialog id="goalDlg">
+    <form id="goalForm">
+      <h2>设置空间目标</h2>
+      <label>一句话目标<textarea name="text" rows="2" maxlength="4000" placeholder="如：README-final 里的状态全部属实：精度过门、Isaac 正式回放、训练数据可用"></textarea></label>
+      <label>目标文档（README / 需求文档，可选）
+        <div id="dropZone" class="drop">把文件拖到这里，或 <u>点击选择</u><br><small>支持 .md .txt .docx .doc .pdf .rtf 等，最大 10MB</small></div><input type="file" id="goalFile" hidden />
+      </label>
+      <div id="goalFileInfo" class="muted small"></div>
+      <label>或直接粘贴文档内容<textarea id="goalPaste" rows="6" placeholder="粘贴 README 全文……"></textarea></label>
+      <div class="dlg-foot">
+        <button type="button" id="goalRemoveDoc" class="danger-ghost hidden">移除现有文档</button>
+        <button type="button" onclick="this.closest('dialog').close()">取消</button>
+        <button class="primary" type="submit">保存目标</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="mediaDlg" class="wide"><div id="mediaBody"></div><div class="dlg-foot"><a id="mediaDl" class="ghost-link" href="#" target="_blank">下载原文件</a><button onclick="this.closest('dialog').close()">关闭</button></div></dialog>
+  <dialog id="docDlg" class="wide"><div id="docBody" class="md"></div><div class="dlg-foot"><button onclick="this.closest('dialog').close()">关闭</button></div></dialog>
+
+  <!-- 守护脚本说明 -->
+  <dialog id="runnerDlg">
+    <h2>实时对话：把 AI 接进空间</h2>
+    <p class="muted">在 AI 工作的那台设备、那个项目目录里运行桥接脚本。之后你在网页上发的消息会<b>直接进入 AI 的会话</b>（AI 正在做事也能收到），AI 的回复会自动发回频道，它执行的命令和过程会出现在「AI 实时会话」里。脚本会记住会话，重启后接着聊。</p>
+    <div class="copy-row"><textarea id="bridgeCmd" rows="4" readonly></textarea><button data-copy="bridgeCmd">复制</button></div>
+    <p class="muted small">支持 Claude Code（claude）和 Codex（codex）命令行，用的是这台设备上已登录的账号。Cursor 聊天窗口、网页版 AI 没有可接入的会话接口，只能用下面的「循环指令」。</p>
+    <hr />
+    <h2>让 AI 不间断工作</h2>
+    <p class="muted">Claude、Codex、Cursor 这类 AI 回复完一轮就会停下，空间没法从外面叫醒它。解决办法是在每台设备上运行守护脚本：它会不停地问空间「下一步做什么」，有活就启动一次 AI 去做，做完再问下一个，直到监督者点「确认目标达成」。</p>
+    <p class="muted">1. 在那台设备的项目目录里下载脚本：</p>
+    <div class="copy-row"><input id="runnerDl" readonly /><button data-copy="runnerDl">复制</button></div>
+    <p class="muted">2. 启动（首次会自动加入空间并保存 token，之后重复运行也不会产生重复成员）。把 --agent 换成 claude / codex，名字换成你想要的：</p>
+    <div class="copy-row"><textarea id="runnerCmd" rows="3" readonly></textarea><button data-copy="runnerCmd">复制</button></div>
+    <p class="muted">已经在空间里的 AI，可以把这段话发给它，让它自己保持循环（不需要脚本，但会话被关掉或到达回合上限后仍会停）：</p>
+    <div class="copy-row"><textarea id="loopPrompt" rows="4" readonly></textarea><button data-copy="loopPrompt">复制</button></div>
+    <div class="dlg-foot"><button onclick="this.closest('dialog').close()">关闭</button></div>
+  </dialog>
+
+  <!-- 任务弹窗 -->
+  <dialog id="taskDlg">
+    <form id="taskForm" method="dialog">
+      <h2 id="taskDlgTitle">派发任务</h2>
+      <label>标题<input name="title" required maxlength="120" /></label>
+      <label>描述 / 验收标准<textarea name="description" rows="5"></textarea></label>
+      <label>执行人<select name="assignee"></select></label>
+      <div class="dlg-foot">
+        <button type="button" onclick="this.closest('dialog').close()">取消</button>
+        <button class="primary" type="submit">派发</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 任务详情 -->
+  <dialog id="detailDlg"><div id="detailBody"></div></dialog>
+
+  <div id="toast"></div>
+  <script src="/app.js?v=10"></script>
+</body>
+</html>
