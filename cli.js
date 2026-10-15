@@ -4,7 +4,7 @@
 //   npm start                         （在项目目录里）
 //   npx github:Fu99966/Agent_room     （不用先下载代码）
 //
-// 可选参数：--local 只在本机用，不开公网隧道；--port 4300；--no-open 不自动打开浏览器
+// 可选参数：--local 只在本机用，不开公网隧道；--port 4300；--no-open 不自动打开浏览器；--no-beacon 不写 GitHub 地址牌
 // 公网隧道用 Cloudflare 的免费临时隧道；本机没有 cloudflared 时会自动下载到 ~/.agent-room/bin。
 const fs = require('fs');
 const path = require('path');
@@ -136,11 +136,36 @@ async function tunnelLoop(bin) {
   }
 }
 
+// ---------- 固定「地址牌」：把当前公网地址写进一个固定的 GitHub secret gist ----------
+// 隧道换了新地址，AI 连不上时去读这个 gist 就能拿到新地址，不用人去逐个通知。
+// 用这台电脑已经登录的 gh（GitHub CLI）；没有 gh 或没登录就跳过，不影响其他功能。
+const BEACON_FILE = path.join(DATA, 'beacon.json');
+let beacon = null;
+function gh(args, input) {
+  try { return execFileSync(which('gh') || 'gh', args, { input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 30000 }).trim(); } catch { return null; }
+}
+function publishBeacon(url) {
+  if (flag('--no-beacon') || !which('gh')) return;
+  try { beacon = JSON.parse(fs.readFileSync(BEACON_FILE, 'utf8')); } catch { beacon = null; }
+  const body = JSON.stringify({ files: { 'agent-room-url.txt': { content: url + '\n' } } });
+  if (beacon?.id && gh(['api', `gists/${beacon.id}`, '-X', 'PATCH', '--input', '-'], body)) return;
+  const login = gh(['api', 'user', '--jq', '.login']);
+  if (!login) return; // gh 没登录
+  const r = gh(['api', 'gists', '-X', 'POST', '--input', '-'], JSON.stringify({ description: 'Agent_room 当前公网地址（自动更新，勿删）', public: false, files: { 'agent-room-url.txt': { content: url + '\n' } } }));
+  try {
+    const id = JSON.parse(r).id;
+    beacon = { id, login, url: `https://api.github.com/gists/${id}` };
+    fs.writeFileSync(BEACON_FILE, JSON.stringify(beacon, null, 1));
+    log(`· 已创建固定地址牌（GitHub secret gist）。以后隧道地址变了，AI 会自动从这里拿新地址。`);
+  } catch { }
+}
+
 function setPublic(url) {
   const changed = publicUrl && publicUrl !== url;
   publicUrl = url;
   fs.mkdirSync(DATA, { recursive: true });
   fs.writeFileSync(PUBLIC_FILE, url);
+  publishBeacon(url);
   banner(changed);
   openBrowser();
 }

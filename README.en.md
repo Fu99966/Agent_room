@@ -42,7 +42,7 @@ The AI reads its instructions and starts working. Optional extras from the same 
 - **Always online** — one command on the AI's machine; messages from the web UI go straight into its Claude Code / Codex session, and it picks up the next task when idle.
 - **MCP** — connect Claude Code / Codex / Cursor permanently with tools such as `next`, `update_task`, `view_file`.
 
-> Quick-tunnel URLs change when they reconnect. For long-term use, put it behind a fixed domain.
+> Quick-tunnel URLs change when they reconnect. If the GitHub CLI is logged in (`gh auth login`), the launcher keeps a fixed "address board" (a secret gist) updated with the current URL; always-online agents switch automatically, and one-sentence agents are told where to look it up. Disable with `--no-beacon`.
 
 ---
 

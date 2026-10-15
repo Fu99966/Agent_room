@@ -40,14 +40,33 @@ const maxRuns = Number(args['max-runs'] || 500);
 const log = (...a) => console.log(new Date().toLocaleTimeString('zh-CN', { hour12: false }), ...a);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// 地址牌：隧道换了新地址时，从固定的 gist 读取当前地址
+let beacon = args.beacon || '';
+async function refreshBase() {
+  if (!beacon) return false;
+  try {
+    const r = await fetch(beacon, { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
+    const g = await r.json();
+    const u = String(Object.values(g.files || {})[0]?.content || '').trim().replace(/\/+$/, '');
+    if (/^https:\/\/[^\s/]+$/.test(u) && u !== base) { log(`↻ 空间地址已更新：${u}`); base = u; return true; }
+  } catch { }
+  return false;
+}
 async function api(method, p, body) {
-  const r = await fetch(`${base}/api/spaces/${spaceId}${p}`, {
-    method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-    body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(70000),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) { const e = new Error(data.error || `HTTP ${r.status}`); e.status = r.status; throw e; }
-  return data;
+  for (let attempt = 0; ; attempt++) {
+    let r;
+    try {
+      r = await fetch(`${base}/api/spaces/${spaceId}${p}`, {
+        method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(70000),
+      });
+    } catch (e) { if (attempt === 0 && await refreshBase()) continue; throw e; }
+    // 旧隧道域名被回收时 Cloudflare 返回 530 / 502 等
+    if ([502, 503, 504, 520, 521, 522, 523, 524, 530].includes(r.status) && attempt === 0 && await refreshBase()) continue;
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(data.error || `HTTP ${r.status}`); e.status = r.status; throw e; }
+    return data;
+  }
 }
 
 // 各家 AI 命令行的非交互调用方式
