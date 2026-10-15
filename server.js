@@ -418,6 +418,31 @@ function connectInfo(req, space, m) {
     codex: `cp ~/.codex/config.toml ~/.codex/config.toml.bak 2>/dev/null; codex mcp remove ai-space >/dev/null 2>&1; cat >> ~/.codex/config.toml <<'EOF'\n\n[mcp_servers.ai-space]\nurl = "${mcp}"\nhttp_headers = { Authorization = "Bearer ${T}" }\ndefault_tools_approval_mode = "approve"\nEOF`,
     cursorCmd: `mkdir -p ~/.cursor && python3 - <<'EOF'\nimport json, os, shutil\np = os.path.expanduser('~/.cursor/mcp.json')\nd = {}\nif os.path.exists(p):\n    shutil.copy(p, p + '.bak')\n    d = json.load(open(p))\nd.setdefault('mcpServers', {})['ai-space'] = {'url': '${mcp}', 'headers': {'Authorization': 'Bearer ${T}'}}\njson.dump(d, open(p, 'w'), indent=2, ensure_ascii=False)\nprint('已写入', p)\nEOF`,
     cursor: JSON.stringify({ mcpServers: { 'ai-space': { url: mcp, headers: { Authorization: `Bearer ${T}` } } } }, null, 2),
+    // Cline 一键配置：找到各编辑器里 Cline 的 cline_mcp_settings.json，备份后合并 ai-space（保留已有服务）
+    clineCmd: `python3 - <<'EOF'
+import json, os, glob, shutil
+cfg = json.loads(${JSON.stringify(JSON.stringify({ type: 'streamableHttp', url: mcp, headers: { Authorization: `Bearer ${T}` }, disabled: false, timeout: 120, autoApprove: MCP_TOOLS.filter(t => !['achieve_goal', 'create_task'].includes(t.name)).map(t => t.name) }))})
+home = os.path.expanduser('~')
+roots = [os.path.join(home, '.config'), os.path.join(home, 'Library', 'Application Support'), os.environ.get('APPDATA', '')]
+found = []
+for r in roots:
+    if r: found += glob.glob(os.path.join(r, '*', 'User', 'globalStorage', 'saoudrizwan.claude-dev'))
+found += glob.glob(os.path.join(home, '.vscode-server', 'data', 'User', 'globalStorage', 'saoudrizwan.claude-dev'))
+if not found:
+    print('没找到 Cline：请先在 VS Code / Cursor 里安装并打开一次 Cline 插件，再运行这条命令')
+for d in found:
+    p = os.path.join(d, 'settings', 'cline_mcp_settings.json')
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    data = {}
+    if os.path.exists(p):
+        shutil.copy(p, p + '.bak')
+        try: data = json.load(open(p))
+        except Exception: data = {}
+    data.setdefault('mcpServers', {})['ai-space'] = cfg
+    json.dump(data, open(p, 'w'), indent=2, ensure_ascii=False)
+    print('已写入', p)
+print('完成。回到 Cline 面板，MCP Servers 列表里 ai-space 变绿就好了（没刷新的话重启一下编辑器）。')
+EOF`,
     // Cline（VS Code / Cursor 插件，可用第三方 API Key）：type 必须写 streamableHttp，不写会按旧的 SSE 连接而失败
     cline: JSON.stringify({ mcpServers: { 'ai-space': { type: 'streamableHttp', url: mcp, headers: { Authorization: `Bearer ${T}` }, disabled: false, timeout: 120, autoApprove: MCP_TOOLS.filter(t => !['achieve_goal', 'create_task'].includes(t.name)).map(t => t.name) } } }, null, 2),
     prompt: `我搭了一个 AI 协作空间「${space.name}」（我自己运行的服务），你已经作为「${m.name}」（${roleLabel}）通过 MCP 接入，工具名为 ai-space。\n请调用 ai-space 的 next 工具，处理派给你的任务；做完一项后直接再调用 next 接着做，不用每次回来问我，直到返回 stop=true。删除大量文件、强制推送、发布上线、动用密钥这类高风险操作，先停下来问我。`,
