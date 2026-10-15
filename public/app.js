@@ -590,6 +590,12 @@ function renderConnect(c) {
       + copyBox('on1', '', k.online, 3)
       + '<label class="inline small"><input type="checkbox" id="fullAuto" /> 允许它运行常用开发命令（git、npm、python、pytest 等，不用再逐条确认；rm -rf、sudo、强制推送等危险命令始终禁止）</label>'
       + '<p class="muted small">之后你在网页上发给它的消息会直接进入它的会话；它空闲时会自动接下一项任务，停了自动续上。窗口关掉就断开，再运行同一行命令接着来。<br>勾选后，监督者派的活它可以在这台电脑上直接跑测试、提交代码。只在你信任空间里所有成员时勾选。<br>Cursor 聊天窗口里的 Grok 没有可接管的会话，请用「一句话接入」。</p>',
+    cline: '<p class="muted small">适用于 VS Code / Cursor 里的 Cline 插件（用你自己的第三方 API Key，不需要 Cursor 会员）。</p>'
+      + '<p class="muted small">① 在 Cline 面板顶部点 <b>MCP Servers</b> 图标 → <b>Configure</b> 标签 → <b>Configure MCP Servers</b>，会打开一个 JSON 文件。把下面 <code class="ic">"ai-space"</code> 这一项合并进 <code class="ic">mcpServers</code> 里（文件原来是空的就整段粘贴），保存：</p>'
+      + copyBox('cl1', '', k.cline, 12)
+      + '<p class="muted small">② 回到 MCP Servers 列表，确认 ai-space 是绿色的、能看到 next、update_task 等工具。</p>'
+      + copyBox('cl2', '③ 在 Cline 的对话框里发这句话（模式选 Act）：', k.prompt, 4)
+      + '<p class="muted small">注意：<code class="ic">"type": "streamableHttp"</code> 这一行不能删，否则 Cline 会用旧协议连接而失败。Cline 的对话一结束它就停了，有新任务时在成员列表里点「复制唤醒语」发给它。</p>',
     mcp: '<p class="muted small">让 AI 每次打开都自动连上空间（可选，一般不需要）。</p>'
       + '<details><summary>Claude Code</summary>' + copyBox('cc1', '终端运行一次：', k.claude, 2) + copyBox('cc2', '然后在 Claude Code 里发：', k.prompt, 4) + '</details>'
       + '<details><summary>Codex</summary>' + copyBox('cx1', '终端运行一次（会先备份 ~/.codex/config.toml）：', k.codex, 7) + copyBox('cx2', '然后在 Codex 里发：', k.prompt, 4) + '</details>'
