@@ -17,7 +17,8 @@ async function req(method, url, body, tok) {
 
 (async () => {
   const srv = spawn('node', ['server.js'], { cwd: __dirname, env: { ...process.env, AIWS_PORT: PORT, AIWS_DATA: DATA } });
-  await new Promise(r => srv.stdout.once('data', r));
+  let errOut = ''; srv.stderr.on('data', d => errOut += d);
+  await new Promise((r, j) => { srv.stdout.once('data', r); srv.once('exit', c => j(new Error(`服务启动失败（code=${c}）：\n${errOut}`))); }).catch(e => { console.error('✗', e.message); process.exit(1); });
   try {
     const c = await req('POST', '/api/spaces', { name: '测试空间', ownerName: '老板' });
     assert.equal(c.status, 201);

@@ -112,6 +112,7 @@ async function enter() {
     S.members = ms; S.me = me; renderMembers(); renderBoard(); renderHeader();
   });
   on('task', t => { const i = S.tasks.findIndex(x => x.id === t.id); i < 0 ? S.tasks.push(t) : (S.tasks[i] = t); renderBoard(); if ($('#detailDlg').open && $('#detailDlg').dataset.id === t.id) openDetail(t.id); });
+  on('public', ({ url }) => { S.publicUrl = url; if (url) toast('公网地址已更新，邀请链接和接入命令已换成新地址'); });
   on('goal', g => { S.goal = g; renderGoal(); if (g.status === 'achieved') toast('🎯 空间目标已达成'); });
   on('tasks', ts => { S.tasks = ts; renderBoard(); });
   on('taskDeleted', ({ id }) => { S.tasks = S.tasks.filter(t => t.id !== id); renderBoard(); });
@@ -129,6 +130,8 @@ async function enter() {
   }, 3000);
 }
 
+// 给别的设备 / 别的 AI 用的地址：有公网地址就用公网地址（在本机 localhost 打开时尤其重要）
+const ORIGIN = () => (S && S.publicUrl) || location.origin;
 const lead = () => S && (S.me.role === 'admin' || S.me.role === 'supervisor');
 // 验收权：监督者；空间里还没有监督者时由管理员兜底（与服务端一致）
 const canReview = () => S && (S.me.role === 'supervisor' || (S.me.role === 'admin' && !S.members.some(m => m.role === 'supervisor')));
@@ -234,10 +237,10 @@ $('#goalReopen').onclick = async () => {
 };
 $('#runnerBtn').onclick = () => {
   const inv = S.inviteCode ? `?invite=${S.inviteCode}` : '';
-  $('#bridgeCmd').value = `curl -fsSLO ${location.origin}/bridge.js\nnode bridge.js --space "${location.origin}/s/${sid}${inv}" --agent claude --name "Claude-这台电脑"\n# Codex 用 --agent codex；想让它空闲时自动接活，加 --autonomous\n# 需要跑测试/git 等命令：--allow "Bash(pytest:*) Bash(git:*)"`;
-  $('#runnerDl').value = `curl -fsSLO ${location.origin}/runner.js`;
-  $('#runnerCmd').value = `node runner.js --space "${location.origin}/s/${sid}${inv}" --name "Claude-这台电脑" --agent claude\n# 需要跑测试/git 等命令时加：--allow "Bash(pytest:*) Bash(git:*)"`;
-  $('#loopPrompt').value = `从现在起请进入工作循环，不要做完一项就停：\n反复调用 GET ${location.origin}/api/spaces/${sid}/next?wait=50（带上你的 token），按返回的 instruction 去做，做完写日志、更新任务，然后立刻再调用 /next。只有返回 stop=true（监督者确认目标达成）才可以停。不要问我要不要继续。`;
+  $('#bridgeCmd').value = `curl -fsSLO ${ORIGIN()}/bridge.js\nnode bridge.js --space "${ORIGIN()}/s/${sid}${inv}" --agent claude --name "Claude-这台电脑"\n# Codex 用 --agent codex；想让它空闲时自动接活，加 --autonomous\n# 需要跑测试/git 等命令：--allow "Bash(pytest:*) Bash(git:*)"`;
+  $('#runnerDl').value = `curl -fsSLO ${ORIGIN()}/runner.js`;
+  $('#runnerCmd').value = `node runner.js --space "${ORIGIN()}/s/${sid}${inv}" --name "Claude-这台电脑" --agent claude\n# 需要跑测试/git 等命令时加：--allow "Bash(pytest:*) Bash(git:*)"`;
+  $('#loopPrompt').value = `我授权你持续处理协作空间里派给你的任务，不用每做完一项都回来问我：\n反复调用 GET ${ORIGIN()}/api/spaces/${sid}/next?wait=50（带上你的 token），按返回的 instruction 去做，做完写日志、更新任务，然后立刻再调用 /next。直到返回 stop=true（监督者确认目标达成）。删除大量文件、强制推送、发布上线、动用密钥这类高风险操作，先停下来问我。`;
   $('#runnerDlg').showModal();
 };
 $('#runnerDlg').onclick = async e => { const c = e.target.dataset.copy; if (c) { const el = $('#' + c); el.select(); await navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy')); toast('已复制'); } };
@@ -311,7 +314,7 @@ function renderHeader() {
   $('#inviteBtn').classList.toggle('hidden', !lead());
   $('#addMemberBtn').classList.toggle('hidden', S.me.role !== 'admin');
   $('#loginLinkBtn').onclick = async () => {
-    const link = `${location.origin}/s/${sid}#key=${tok}`;
+    const link = `${ORIGIN()}/s/${sid}#key=${tok}`;
     await navigator.clipboard.writeText(link).catch(() => prompt('复制你的登录链接（别发给别人）：', link));
     toast('已复制登录链接。换浏览器、换设备或地址变了，用它就能以你的身份回来。别发给别人');
   };
@@ -347,7 +350,7 @@ function renderMembers() {
 }
 $('#memberList').onclick = async e => {
   const wk = e.target.closest('[data-wake]');
-  if (wk) { e.preventDefault(); const t = member(wk.dataset.wake); const text = `空间「${S.space.name}」里有发给你的新消息和任务。请调用 ai-space 的 next 工具（没有 MCP 就按接入说明调用 /next）读取并执行，做完再调用 next，一直循环到返回 stop=true，不要停。`; await navigator.clipboard.writeText(text).catch(() => prompt('复制这句话：', text)); return toast(`已复制唤醒语，去 ${t.name} 的对话框里粘贴发送`); }
+  if (wk) { e.preventDefault(); const t = member(wk.dataset.wake); const text = `空间「${S.space.name}」里有发给你的新消息和任务。请调用 ai-space 的 next 工具（没有 MCP 就按接入说明调用 /next）读取并处理派给你的任务，做完一项再调用 next 取下一项，直到返回 stop=true。高风险操作先问我。`; await navigator.clipboard.writeText(text).catch(() => prompt('复制这句话：', text)); return toast(`已复制唤醒语，去 ${t.name} 的对话框里粘贴发送`); }
   const lg = e.target.closest('[data-logs]');
   if (lg) { document.querySelector('[data-tab=logs]').click(); $('#logFilter').value = lg.dataset.logs; return renderLogs(); }
   const b = e.target.closest('button'); if (!b) return;
@@ -547,7 +550,7 @@ $('#msgList').addEventListener('click', async e => {
   const w = e.target.closest('[data-wake]'); if (!w) return;
   e.preventDefault();
   const t = member(w.dataset.wake);
-  const text = `空间「${S.space.name}」里有发给你的新消息和任务。请调用 ai-space 的 next 工具（没有 MCP 就按接入说明调用 /next）读取并执行，做完再调用 next，一直循环到返回 stop=true，不要停。`;
+  const text = `空间「${S.space.name}」里有发给你的新消息和任务。请调用 ai-space 的 next 工具（没有 MCP 就按接入说明调用 /next）读取并处理派给你的任务，做完一项再调用 next 取下一项，直到返回 stop=true。高风险操作先问我。`;
   await navigator.clipboard.writeText(text).catch(() => prompt('复制这句话，发到 ' + t.name + ' 的对话框：', text));
   toast(`已复制唤醒语，去 ${t.name} 所在的 Cursor / Claude 里粘贴发送`);
 });
@@ -573,14 +576,14 @@ function renderConnect(c) {
     claude: copyBox('cc1', '① 在那台电脑的终端里运行（只需一次）：', k.claude, 2) + copyBox('cc2', '② 打开 Claude Code，把这句话发给它：', k.prompt, 4) + copyBox('cc3', '想让你在网页上发的话实时进入它的会话、它停了自动续上？改用实时桥接（在项目目录运行）：', k.bridge, 2),
     codex: copyBox('cx1', '① 在那台电脑的终端里运行（只需一次，会先备份 ~/.codex/config.toml）：', k.codex, 7) + copyBox('cx2', '② 打开 Codex，把这句话发给它：', k.prompt, 4) + copyBox('cx3', '实时桥接（可选）：', k.bridge.replace('--agent claude', '--agent codex'), 2),
     cursor: copyBox('cu0', '① 在那台电脑的终端里运行（会保留已有配置并先备份 ~/.cursor/mcp.json）：', k.cursorCmd, 6) + '<p class="muted small">② 重启 Cursor，或到 Settings → MCP 里确认 ai-space 是绿色已启用。</p>' + copyBox('cu2', '③ 在 Cursor 聊天里切到 Agent 模式（模型选 Grok），把这句话发给它：', k.prompt, 4) + copyBox('cu1', '手动配置时用的 JSON（一般不需要）：', k.cursor, 6),
-    plain: copyBox('pl1', '把这段话发给它（AI 需要能联网或执行命令）：', k.plain, 5),
+    plain: copyBox('pl1', '粘贴到 AI 的对话框（Claude Code、Codex、Cursor 里的 Grok 等，只要它能执行命令或联网）：', k.plain, 6) + '<p class="muted small">它会自己读接入说明、开始工作。想让它以后每次打开都自动连上空间，再用右边的 MCP 方式配置一次（可选）。</p>',
   }[c];
   $('#connectBody').innerHTML = body;
 }
 function openConnect(info, name) {
   conn = info; connName = name;
   $('#connectTitle').textContent = `「${name}」的接入方式`;
-  renderConnect('claude');
+  renderConnect('plain');
   $('#connectDlg').showModal();
 }
 document.querySelectorAll('.ctab').forEach(b => b.onclick = () => renderConnect(b.dataset.c));
@@ -599,12 +602,12 @@ $('#addForm').onsubmit = async e => {
 // ---------- 邀请 ----------
 function openInvite() {
   if (!S?.inviteCode) return toast('只有管理员或监督者能查看邀请链接');
-  const link = `${location.origin}/s/${sid}?invite=${S.inviteCode}`;
-  const guide = `${location.origin}/api/spaces/${sid}/guide?invite=${S.inviteCode}`;
+  const link = `${ORIGIN()}/s/${sid}?invite=${S.inviteCode}`;
+  const guide = `${ORIGIN()}/api/spaces/${sid}/guide?invite=${S.inviteCode}`;
   $('#humanLink').value = link;
   $('#aiPrompt').value = `你被邀请加入一个多 AI 协作空间「${S.space.name}」。\n请先读取这个地址获取接入说明，然后按说明加入并开始工作：\n${guide}\n\n加入后请定期轮询收件箱，执行派给你的任务，完成后提交验收。\n重要：每做完一步，都要调用日志接口记录「做了什么、遇到什么问题、下一步」，不要攒到最后。\n最重要：不要做完一项就停。按说明里的「工作循环」反复调用 /next，直到返回 stop=true。`;
   $('#resetInvite').classList.toggle('hidden', S.me.role !== 'admin');
-  if (/localhost|127\.0\.0\.1/.test(location.hostname)) toast('提示：当前是本机地址，其他设备需要用公网链接访问');
+  if (/localhost|127\.0\.0\.1/.test(new URL(ORIGIN()).hostname)) toast('提示：现在没有公网地址，这些链接只能在本机用。用 npm start 启动会自动生成公网地址');
   $('#inviteDlg').showModal();
 }
 $('#inviteBtn').onclick = openInvite;

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI 协作空间</title>
-  <link rel="stylesheet" href="/styles.css?v=10" />
+  <link rel="stylesheet" href="/styles.css?v=11" />
 </head>
 <body>
   <!-- 首页：创建空间 -->
@@ -119,12 +119,12 @@
   </dialog>
   <dialog id="connectDlg" class="wide">
     <h2 id="connectTitle">接入方式</h2>
-    <p class="muted">选择这个 AI 所在的工具，复制给它即可。这些内容含有它的专属令牌，只发给这一个 AI。</p>
+    <p class="muted">复制下面这段话，粘贴到那个 AI 的对话框里发送，就接入完成了，不用在终端里运行任何命令。内容含有它的专属令牌，只发给这一个 AI。</p>
     <div class="ctabs">
-      <button class="ctab active" data-c="claude">Claude Code</button>
-      <button class="ctab" data-c="codex">Codex</button>
-      <button class="ctab" data-c="cursor">Cursor（含 Grok）</button>
-      <button class="ctab" data-c="plain">其他 AI / 聊天窗口</button>
+      <button class="ctab active" data-c="plain">⭐ 一句话接入（任何 AI）</button>
+      <button class="ctab" data-c="claude">Claude Code · MCP</button>
+      <button class="ctab" data-c="codex">Codex · MCP</button>
+      <button class="ctab" data-c="cursor">Cursor · MCP</button>
     </div>
     <div id="connectBody"></div>
     <div class="dlg-foot"><button onclick="this.closest('dialog').close()">完成</button></div>
@@ -199,6 +199,6 @@
   <dialog id="detailDlg"><div id="detailBody"></div></dialog>
 
   <div id="toast"></div>
-  <script src="/app.js?v=10"></script>
+  <script src="/app.js?v=11"></script>
 </body>
 </html>
