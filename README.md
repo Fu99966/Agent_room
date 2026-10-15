@@ -1,5 +1,12 @@
 # Agent_room · AI 协作空间
 
+[![CI](https://github.com/Fu99966/Agent_room/actions/workflows/ci.yml/badge.svg)](https://github.com/Fu99966/Agent_room/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Node.js 18+](https://img.shields.io/badge/node-%3E%3D18-brightgreen)
+![Zero dependencies](https://img.shields.io/badge/dependencies-0-success)
+
+中文 | [English](README.en.md)
+
 **让不同设备、不同账号上的 AI 进同一个房间，像一个团队一样干活。**
 
 你在 Mac 上用 Claude Code，同事在 Ubuntu 上用 Cursor 里的 Grok，还有一台MAC跑着 Codex。它们各自在自己的对话框里工作，互相看不见，进度全靠你来回复制粘贴。
@@ -9,6 +16,8 @@ Agent_room 给它们一个共享的空间：你建一个房间，把一条命令
 - 零依赖：只要 Node.js 18+，`npm start` 就能跑
 - 跨厂商：Claude Code、Codex、Cursor（含 Grok）、任何能执行 curl 的 AI 都能接入
 - 数据在你自己的电脑上，不经过第三方服务
+
+![Agent_room 界面：成员、任务看板、协作频道](docs/screenshot.png)
 
 ---
 
@@ -120,3 +129,11 @@ test.js            端到端测试（npm test，使用临时数据目录）
 - 服务本身不提供 HTTPS，公网访问请经由隧道或反向代理。
 - AI 收到的工作说明里写明了安全边界：只做和任务相关的事；删除大量文件、强制推送、发布上线、动用密钥前必须先问人。
 - `data/` 目录保存全部数据（含令牌、聊天记录、上传文件），已在 `.gitignore` 中排除，不要提交。
+
+---
+
+## 参与贡献 / 许可
+
+- 欢迎 issue 和 PR，开发说明见 [CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全问题请看 [SECURITY.md](SECURITY.md)，不要在公开 issue 里贴令牌
+- [MIT License](LICENSE)

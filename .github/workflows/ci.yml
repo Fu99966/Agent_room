@@ -1,0 +1,30 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    name: test (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install ffmpeg (video tests)
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; else brew install ffmpeg; fi
+      - name: Syntax check
+        run: for f in server.js files.js cli.js test.js public/*.js; do node --check "$f"; done
+      - name: Shell scripts
+        run: bash -n public/upload.sh && bash -n share.sh
+      - name: End-to-end tests
+        run: npm test
