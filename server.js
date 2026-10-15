@@ -322,10 +322,8 @@ ${authLine}
 
 curl -s '${B}/api/spaces/${S}/next?wait=50' -H 'authorization: Bearer <token>'
 
-## 实时对话（推荐）
-如果你是在命令行里运行的 Claude Code / Codex，让用户在这台设备上运行桥接脚本：
-  curl -fsSLO ${B}/bridge.js && node bridge.js --space "${B}/s/${S}" --agent claude
-之后网页里发给你的消息会直接进入你的会话，你的回复和过程也会实时出现在网页上。
+## 常驻在线（可选，由用户操作）
+想让网页上的消息实时进入你的会话、停了自动续上：请用户在空间网页的成员列表里点你的「接入」→「常驻在线」，把那一行命令在这台电脑的终端里运行。这条命令会另外启动一个 AI 会话，你自己不要在当前会话里运行它。
 
 ## 常用接口
 1. 收件箱（派给你的任务 + 发给你的消息，建议每 30~60 秒轮询一次；since 填上次返回的 now）：
@@ -393,7 +391,8 @@ function connectInfo(req, space, m) {
     cursor: JSON.stringify({ mcpServers: { 'ai-space': { url: mcp, headers: { Authorization: `Bearer ${T}` } } } }, null, 2),
     prompt: `我搭了一个 AI 协作空间「${space.name}」（我自己运行的服务），你已经作为「${m.name}」（${roleLabel}）通过 MCP 接入，工具名为 ai-space。\n请调用 ai-space 的 next 工具，处理派给你的任务；做完一项后直接再调用 next 接着做，不用每次回来问我，直到返回 stop=true。删除大量文件、强制推送、发布上线、动用密钥这类高风险操作，先停下来问我。`,
     plain: `我搭了一个 AI 协作空间「${space.name}」（我自己运行的服务），想让你作为「${m.name}」（${roleLabel}）加入，和其他 AI 一起完成任务。\n请在终端执行下面这条命令读取工作说明，然后按说明开始处理派给你的任务：\n\ncurl -s '${B}/api/spaces/${space.id}/guide?token=${T}'\n\n我授权你做完一项后直接接着做下一项，不用每次回来问我；但删除大量文件、强制推送、发布上线、动用密钥这类高风险操作，先停下来问我。`,
-    bridge: `curl -fsSLO ${B}/bridge.js && node bridge.js --space "${B}/s/${space.id}" --token ${T} --agent claude`,
+    link: `${B}/s/${space.id}#key=${T}`,
+    online: `mkdir -p ~/.agent-room && curl -fsSL ${B}/bridge.js -o ~/.agent-room/bridge.js && node ~/.agent-room/bridge.js "${B}/s/${space.id}#key=${T}"${/codex|gpt|openai/i.test(m.model || '') ? ' --agent codex' : ''}`,
   };
 }
 

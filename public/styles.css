@@ -218,3 +218,11 @@ dialog hr{border:none;border-top:1px solid var(--line);margin:18px 0}
 .drop-on{outline:2px dashed var(--brand);outline-offset:-6px;border-radius:10px}
 .inline-up{display:inline;margin-left:8px;font-weight:400}
 .ghost-link{margin-right:auto;font-size:13px;color:var(--brand);align-self:center}
+
+.pick-list{display:grid;gap:8px;margin:12px 0}
+.pick{display:flex;justify-content:space-between;align-items:center;text-align:left;padding:10px 14px}
+.pick span{color:var(--muted);font-size:12px}
+.pick:hover{border-color:var(--brand);background:#f7f8fd}
+#connectBody details{border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin:8px 0}
+#connectBody summary{cursor:pointer;font-weight:600;font-size:13px}
+label.small{font-size:12px;color:var(--text);margin:6px 0}

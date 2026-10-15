@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI 协作空间</title>
-  <link rel="stylesheet" href="/styles.css?v=11" />
+  <link rel="stylesheet" href="/styles.css?v=12" />
 </head>
 <body>
   <!-- 首页：创建空间 -->
@@ -63,7 +63,7 @@
       <button id="goalEdit" class="ghost hidden">设置目标</button>
       <button id="goalDone" class="primary hidden">确认目标达成</button>
       <button id="goalReopen" class="ghost hidden">重新开启</button>
-      <button id="runnerBtn" class="ghost">⚡ 接入 AI / 不间断工作</button>
+      <button id="runnerBtn" class="ghost">⚡ 接入 AI</button>
     </div>
     <div class="layout">
       <aside class="panel members">
@@ -119,12 +119,11 @@
   </dialog>
   <dialog id="connectDlg" class="wide">
     <h2 id="connectTitle">接入方式</h2>
-    <p class="muted">复制下面这段话，粘贴到那个 AI 的对话框里发送，就接入完成了，不用在终端里运行任何命令。内容含有它的专属令牌，只发给这一个 AI。</p>
+    <p class="muted">下面的内容含有这个 AI 的专属令牌，只发给它。</p>
     <div class="ctabs">
-      <button class="ctab active" data-c="plain">⭐ 一句话接入（任何 AI）</button>
-      <button class="ctab" data-c="claude">Claude Code · MCP</button>
-      <button class="ctab" data-c="codex">Codex · MCP</button>
-      <button class="ctab" data-c="cursor">Cursor · MCP</button>
+      <button class="ctab active" data-c="plain">⭐ 一句话接入</button>
+      <button class="ctab" data-c="online">⚡ 常驻在线</button>
+      <button class="ctab" data-c="mcp">高级：MCP</button>
     </div>
     <div id="connectBody"></div>
     <div class="dlg-foot"><button onclick="this.closest('dialog').close()">完成</button></div>
@@ -165,19 +164,9 @@
 
   <!-- 守护脚本说明 -->
   <dialog id="runnerDlg">
-    <h2>实时对话：把 AI 接进空间</h2>
-    <p class="muted">在 AI 工作的那台设备、那个项目目录里运行桥接脚本。之后你在网页上发的消息会<b>直接进入 AI 的会话</b>（AI 正在做事也能收到），AI 的回复会自动发回频道，它执行的命令和过程会出现在「AI 实时会话」里。脚本会记住会话，重启后接着聊。</p>
-    <div class="copy-row"><textarea id="bridgeCmd" rows="4" readonly></textarea><button data-copy="bridgeCmd">复制</button></div>
-    <p class="muted small">支持 Claude Code（claude）和 Codex（codex）命令行，用的是这台设备上已登录的账号。Cursor 聊天窗口、网页版 AI 没有可接入的会话接口，只能用下面的「循环指令」。</p>
-    <hr />
-    <h2>让 AI 不间断工作</h2>
-    <p class="muted">Claude、Codex、Cursor 这类 AI 回复完一轮就会停下，空间没法从外面叫醒它。解决办法是在每台设备上运行守护脚本：它会不停地问空间「下一步做什么」，有活就启动一次 AI 去做，做完再问下一个，直到监督者点「确认目标达成」。</p>
-    <p class="muted">1. 在那台设备的项目目录里下载脚本：</p>
-    <div class="copy-row"><input id="runnerDl" readonly /><button data-copy="runnerDl">复制</button></div>
-    <p class="muted">2. 启动（首次会自动加入空间并保存 token，之后重复运行也不会产生重复成员）。把 --agent 换成 claude / codex，名字换成你想要的：</p>
-    <div class="copy-row"><textarea id="runnerCmd" rows="3" readonly></textarea><button data-copy="runnerCmd">复制</button></div>
-    <p class="muted">已经在空间里的 AI，可以把这段话发给它，让它自己保持循环（不需要脚本，但会话被关掉或到达回合上限后仍会停）：</p>
-    <div class="copy-row"><textarea id="loopPrompt" rows="4" readonly></textarea><button data-copy="loopPrompt">复制</button></div>
+    <h2>接入 AI</h2>
+    <p class="muted">选一个 AI 成员，拿到它的接入方式：粘贴一句话就能开工；想让它一直在线、网页消息实时进入它的会话，就在它那台电脑上运行一行命令。</p>
+    <div id="pickList" class="pick-list"></div>
     <div class="dlg-foot"><button onclick="this.closest('dialog').close()">关闭</button></div>
   </dialog>
 
@@ -199,6 +188,6 @@
   <dialog id="detailDlg"><div id="detailBody"></div></dialog>
 
   <div id="toast"></div>
-  <script src="/app.js?v=11"></script>
+  <script src="/app.js?v=12"></script>
 </body>
 </html>

@@ -236,14 +236,17 @@ $('#goalReopen').onclick = async () => {
   try { S.goal = await call('POST', `/api/spaces/${sid}/goal/reopen`); renderGoal(); toast('已重新开启，AI 会继续工作'); } catch (err) { toast(err.message); }
 };
 $('#runnerBtn').onclick = () => {
-  const inv = S.inviteCode ? `?invite=${S.inviteCode}` : '';
-  $('#bridgeCmd').value = `curl -fsSLO ${ORIGIN()}/bridge.js\nnode bridge.js --space "${ORIGIN()}/s/${sid}${inv}" --agent claude --name "Claude-这台电脑"\n# Codex 用 --agent codex；想让它空闲时自动接活，加 --autonomous\n# 需要跑测试/git 等命令：--allow "Bash(pytest:*) Bash(git:*)"`;
-  $('#runnerDl').value = `curl -fsSLO ${ORIGIN()}/runner.js`;
-  $('#runnerCmd').value = `node runner.js --space "${ORIGIN()}/s/${sid}${inv}" --name "Claude-这台电脑" --agent claude\n# 需要跑测试/git 等命令时加：--allow "Bash(pytest:*) Bash(git:*)"`;
-  $('#loopPrompt').value = `我授权你持续处理协作空间里派给你的任务，不用每做完一项都回来问我：\n反复调用 GET ${ORIGIN()}/api/spaces/${sid}/next?wait=50（带上你的 token），按返回的 instruction 去做，做完写日志、更新任务，然后立刻再调用 /next。直到返回 stop=true（监督者确认目标达成）。删除大量文件、强制推送、发布上线、动用密钥这类高风险操作，先停下来问我。`;
+  if (S.me.role !== 'admin') return toast('只有管理员能查看接入命令');
+  const ais = S.members.filter(m => m.kind === 'ai');
+  $('#pickList').innerHTML = ais.length ? ais.map(m => `<button class="pick" data-pick="${m.id}"><b>${esc(m.name)}</b><span>${ROLE[m.role]}${m.model ? ' · ' + esc(m.model) : ''}${m.active ? ' · 在线' : ''}</span></button>`).join('')
+    : '<p class="muted">还没有 AI 成员。<a href="#" data-addfirst>先添加一个</a></p>';
   $('#runnerDlg').showModal();
 };
-$('#runnerDlg').onclick = async e => { const c = e.target.dataset.copy; if (c) { const el = $('#' + c); el.select(); await navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy')); toast('已复制'); } };
+$('#runnerDlg').onclick = async e => {
+  const p = e.target.closest('[data-pick]');
+  if (p) { try { const info = await call('GET', `/api/spaces/${sid}/members/${p.dataset.pick}/connect`); $('#runnerDlg').close(); openConnect(info, member(p.dataset.pick)?.name || '', 'online'); } catch (err) { toast(err.message); } return; }
+  if (e.target.closest('[data-addfirst]')) { e.preventDefault(); $('#runnerDlg').close(); $('#addMemberBtn').click(); }
+};
 
 // ---------- AI 实时会话 ----------
 let liveUnread = 0;
@@ -573,17 +576,25 @@ function renderConnect(c) {
   document.querySelectorAll('.ctab').forEach(b => b.classList.toggle('active', b.dataset.c === c));
   const k = conn;
   const body = {
-    claude: copyBox('cc1', '① 在那台电脑的终端里运行（只需一次）：', k.claude, 2) + copyBox('cc2', '② 打开 Claude Code，把这句话发给它：', k.prompt, 4) + copyBox('cc3', '想让你在网页上发的话实时进入它的会话、它停了自动续上？改用实时桥接（在项目目录运行）：', k.bridge, 2),
-    codex: copyBox('cx1', '① 在那台电脑的终端里运行（只需一次，会先备份 ~/.codex/config.toml）：', k.codex, 7) + copyBox('cx2', '② 打开 Codex，把这句话发给它：', k.prompt, 4) + copyBox('cx3', '实时桥接（可选）：', k.bridge.replace('--agent claude', '--agent codex'), 2),
-    cursor: copyBox('cu0', '① 在那台电脑的终端里运行（会保留已有配置并先备份 ~/.cursor/mcp.json）：', k.cursorCmd, 6) + '<p class="muted small">② 重启 Cursor，或到 Settings → MCP 里确认 ai-space 是绿色已启用。</p>' + copyBox('cu2', '③ 在 Cursor 聊天里切到 Agent 模式（模型选 Grok），把这句话发给它：', k.prompt, 4) + copyBox('cu1', '手动配置时用的 JSON（一般不需要）：', k.cursor, 6),
-    plain: copyBox('pl1', '粘贴到 AI 的对话框（Claude Code、Codex、Cursor 里的 Grok 等，只要它能执行命令或联网）：', k.plain, 6) + '<p class="muted small">它会自己读接入说明、开始工作。想让它以后每次打开都自动连上空间，再用右边的 MCP 方式配置一次（可选）。</p>',
+    plain: copyBox('pl1', '粘贴到这个 AI 的对话框发送（Claude Code、Codex、Cursor 里的 Grok 都行，只要它能执行命令或联网）：', k.plain, 6)
+      + '<p class="muted small">不用运行任何命令。缺点：AI 的对话一结束它就停了，要你再去发一句；成员列表里有「复制唤醒语」。</p>',
+    online: '<p class="muted small">在这个 AI 平时工作的那台电脑上，进到项目目录，运行下面这一行（需要 Node.js 18+，以及已登录的 claude 或 codex 命令行）：</p>'
+      + copyBox('on1', '', k.online, 3)
+      + '<label class="inline small"><input type="checkbox" id="fullAuto" /> 允许它在这台电脑上执行任何命令（跑测试、git、安装依赖都不用再确认）</label>'
+      + '<p class="muted small">之后你在网页上发给它的消息会直接进入它的会话；它空闲时会自动接下一项任务，停了自动续上。窗口关掉就断开，再运行同一行命令接着来。<br>勾选上面一项后，空间里的监督者派的活它都能直接在这台电脑上执行，只在你信任空间里所有成员时勾选。<br>Cursor 聊天窗口里的 Grok 没有可接管的会话，请用「一句话接入」。</p>',
+    mcp: '<p class="muted small">让 AI 每次打开都自动连上空间（可选，一般不需要）。</p>'
+      + '<details><summary>Claude Code</summary>' + copyBox('cc1', '终端运行一次：', k.claude, 2) + copyBox('cc2', '然后在 Claude Code 里发：', k.prompt, 4) + '</details>'
+      + '<details><summary>Codex</summary>' + copyBox('cx1', '终端运行一次（会先备份 ~/.codex/config.toml）：', k.codex, 7) + copyBox('cx2', '然后在 Codex 里发：', k.prompt, 4) + '</details>'
+      + '<details><summary>Cursor（含 Grok）</summary>' + copyBox('cu0', '终端运行一次（保留已有配置，先备份 ~/.cursor/mcp.json），然后重启 Cursor：', k.cursorCmd, 6) + copyBox('cu2', '在 Cursor 的 Agent 模式里发：', k.prompt, 4) + '</details>',
   }[c];
   $('#connectBody').innerHTML = body;
+  const fa = $('#fullAuto');
+  if (fa) fa.onchange = () => { $('#on1').value = k.online + (fa.checked ? ' --full-auto' : ''); };
 }
-function openConnect(info, name) {
+function openConnect(info, name, tab = 'plain') {
   conn = info; connName = name;
   $('#connectTitle').textContent = `「${name}」的接入方式`;
-  renderConnect('plain');
+  renderConnect(tab);
   $('#connectDlg').showModal();
 }
 document.querySelectorAll('.ctab').forEach(b => b.onclick = () => renderConnect(b.dataset.c));
