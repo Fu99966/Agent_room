@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI 协作空间</title>
-  <link rel="stylesheet" href="/styles.css?v=12" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css?v=13" />
 </head>
 <body>
   <!-- 首页：创建空间 -->
@@ -114,7 +115,7 @@
       <label>名字<input name="name" required maxlength="40" placeholder="如：Grok-公司电脑" /></label>
       <label>角色<select name="role"><option value="employee">员工（执行任务）</option><option value="supervisor">监督者（派活、验收）</option></select></label>
       <label>模型 / 备注（可选）<input name="model" maxlength="40" placeholder="如：Cursor Grok 4.6" /></label>
-      <div class="dlg-foot"><button type="button" onclick="this.closest('dialog').close()">取消</button><button class="primary" type="submit">生成接入方式</button></div>
+      <div class="dlg-foot"><button type="button" data-close>取消</button><button class="primary" type="submit">生成接入方式</button></div>
     </form>
   </dialog>
   <dialog id="connectDlg" class="wide">
@@ -126,7 +127,7 @@
       <button class="ctab" data-c="mcp">高级：MCP</button>
     </div>
     <div id="connectBody"></div>
-    <div class="dlg-foot"><button onclick="this.closest('dialog').close()">完成</button></div>
+    <div class="dlg-foot"><button id="rotateBtn" class="danger-ghost" type="button">令牌泄露了？换一个</button><button data-close>完成</button></div>
   </dialog>
 
   <!-- 邀请弹窗 -->
@@ -138,7 +139,7 @@
     <div class="copy-row"><textarea id="aiPrompt" rows="6" readonly></textarea><button data-copy="aiPrompt">复制</button></div>
     <div class="dlg-foot">
       <button id="resetInvite" class="danger-ghost hidden">重置邀请码（旧链接失效）</button>
-      <button onclick="this.closest('dialog').close()">关闭</button>
+      <button data-close>关闭</button>
     </div>
   </dialog>
 
@@ -154,20 +155,20 @@
       <label>或直接粘贴文档内容<textarea id="goalPaste" rows="6" placeholder="粘贴 README 全文……"></textarea></label>
       <div class="dlg-foot">
         <button type="button" id="goalRemoveDoc" class="danger-ghost hidden">移除现有文档</button>
-        <button type="button" onclick="this.closest('dialog').close()">取消</button>
+        <button type="button" data-close>取消</button>
         <button class="primary" type="submit">保存目标</button>
       </div>
     </form>
   </dialog>
-  <dialog id="mediaDlg" class="wide"><div id="mediaBody"></div><div class="dlg-foot"><a id="mediaDl" class="ghost-link" href="#" target="_blank">下载原文件</a><button onclick="this.closest('dialog').close()">关闭</button></div></dialog>
-  <dialog id="docDlg" class="wide"><div id="docBody" class="md"></div><div class="dlg-foot"><button onclick="this.closest('dialog').close()">关闭</button></div></dialog>
+  <dialog id="mediaDlg" class="wide"><div id="mediaBody"></div><div class="dlg-foot"><a id="mediaDl" class="ghost-link" href="#" target="_blank">下载原文件</a><button data-close>关闭</button></div></dialog>
+  <dialog id="docDlg" class="wide"><div id="docBody" class="md"></div><div class="dlg-foot"><button data-close>关闭</button></div></dialog>
 
   <!-- 守护脚本说明 -->
   <dialog id="runnerDlg">
     <h2>接入 AI</h2>
     <p class="muted">选一个 AI 成员，拿到它的接入方式：粘贴一句话就能开工；想让它一直在线、网页消息实时进入它的会话，就在它那台电脑上运行一行命令。</p>
     <div id="pickList" class="pick-list"></div>
-    <div class="dlg-foot"><button onclick="this.closest('dialog').close()">关闭</button></div>
+    <div class="dlg-foot"><button data-close>关闭</button></div>
   </dialog>
 
   <!-- 任务弹窗 -->
@@ -178,7 +179,7 @@
       <label>描述 / 验收标准<textarea name="description" rows="5"></textarea></label>
       <label>执行人<select name="assignee"></select></label>
       <div class="dlg-foot">
-        <button type="button" onclick="this.closest('dialog').close()">取消</button>
+        <button type="button" data-close>取消</button>
         <button class="primary" type="submit">派发</button>
       </div>
     </form>
@@ -188,6 +189,6 @@
   <dialog id="detailDlg"><div id="detailBody"></div></dialog>
 
   <div id="toast"></div>
-  <script src="/app.js?v=12"></script>
+  <script src="/app.js?v=13"></script>
 </body>
 </html>

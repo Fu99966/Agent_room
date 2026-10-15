@@ -8,7 +8,7 @@
 // 用法（零依赖，Node 18+，在 AI 平时工作的项目目录里运行）：
 //   node bridge.js "<成员链接，形如 https://域名/s/<空间ID>#key=<令牌>>"
 // 网页上「成员 → 接入 → 常驻在线」会生成完整的一行命令，复制运行即可。
-// 自动选择本机的 claude 或 codex；可选：--agent claude|codex  --full-auto（允许执行任何命令）
+// 自动选择本机的 claude 或 codex；可选：--agent claude|codex  --full-auto（放行常用开发命令，危险命令始终禁止）  --allow "Bash(docker:*)"
 //   --chat-only（只处理消息，不自动接活）  --model <模型>  --cwd <目录>  --new（丢弃旧会话重新开始）
 const fs = require('fs');
 const path = require('path');
@@ -42,6 +42,12 @@ const agent = args.agent || (onPath('claude') ? 'claude' : onPath('codex') ? 'co
 if (!agent) { console.error('这台电脑上没找到 claude 或 codex 命令行。请先安装并登录其中一个，再运行这条命令。'); process.exit(1); }
 const cwd = path.resolve(args.cwd || process.cwd());
 const fullAuto = !!args['full-auto'];
+// --full-auto 不再是“什么都能执行”：放行常用开发命令，危险命令始终禁止（在 Claude 的权限层拦截，不靠 AI 自觉）
+const DEV_ALLOW = ['Edit', 'Write', 'Read', 'Glob', 'Grep', 'Bash(curl:*)', 'Bash(git init:*)', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git switch:*)', 'Bash(git checkout:*)', 'Bash(git pull:*)', 'Bash(git fetch:*)', 'Bash(git stash:*)', 'Bash(git branch:*)',
+  'Bash(ls:*)', 'Bash(cat:*)', 'Bash(head:*)', 'Bash(tail:*)', 'Bash(wc:*)', 'Bash(find:*)', 'Bash(grep:*)', 'Bash(mkdir:*)', 'Bash(cp:*)', 'Bash(mv:*)', 'Bash(touch:*)', 'Bash(echo:*)', 'Bash(pwd)', 'Bash(which:*)',
+  'Bash(node:*)', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(pnpm:*)', 'Bash(yarn:*)', 'Bash(python:*)', 'Bash(python3:*)', 'Bash(pip:*)', 'Bash(pip3:*)', 'Bash(uv:*)', 'Bash(pytest:*)', 'Bash(make:*)', 'Bash(cargo:*)', 'Bash(go:*)', 'Bash(ffmpeg:*)', 'Bash(ffprobe:*)'];
+const DENY = ['Bash(rm -rf:*)', 'Bash(rm -fr:*)', 'Bash(sudo:*)', 'Bash(git push --force:*)', 'Bash(git push -f:*)', 'Bash(git reset --hard:*)', 'Bash(git clean:*)', 'Bash(git filter-branch:*)', 'Bash(chmod -R:*)', 'Bash(chown:*)', 'Bash(dd:*)', 'Bash(mkfs:*)', 'Bash(shutdown:*)', 'Bash(reboot:*)', 'Bash(ssh:*)', 'Bash(scp:*)', 'Bash(security:*)', 'Bash(gh auth:*)'];
+const extraAllow = String(args.allow || '').split(/[\s,]+/).filter(Boolean);
 const autonomous = !args['chat-only'];
 // 状态存在 ~/.agent-room/bridge，不往项目目录里写令牌文件
 const HOME = process.env.AGENT_ROOM_HOME || path.join(os.homedir(), '.agent-room');
@@ -106,7 +112,9 @@ function claudeDriver(onFinal) {
   let child = null, busy = false, turn = 0;
   const start = () => {
     const argv = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
-      ...(fullAuto ? ['--dangerously-skip-permissions'] : ['--permission-mode', args['permission-mode'] || 'acceptEdits', '--allowedTools', 'Bash(curl:*)', ...String(args.allow || '').split(' ').filter(Boolean)])];
+      '--permission-mode', args['permission-mode'] || 'acceptEdits',
+      '--allowedTools', ...(fullAuto ? DEV_ALLOW : ['Bash(curl:*)']), ...extraAllow,
+      '--disallowedTools', ...DENY];
     if (args.model) argv.push('--model', args.model);
     if (state.session) argv.push('--resume', state.session);
     log(`▶ 启动 Claude 会话${state.session ? `（续接 ${state.session.slice(0, 8)}…）` : ''}`);
@@ -161,7 +169,7 @@ function codexDriver(onFinal) {
     busy = true; setState('working'); turn++;
     const text = queue.splice(0).join('\n\n---\n\n');
     // 可写工作目录 + 允许联网（要用 curl 调空间接口）；resume 子命令不接受 -s，统一用 -c 覆盖配置
-    const common = ['--json', '--skip-git-repo-check', '-c', `sandbox_mode=${args.sandbox || (fullAuto ? 'danger-full-access' : 'workspace-write')}`, '-c', 'sandbox_workspace_write.network_access=true'];
+    const common = ['--json', '--skip-git-repo-check', '-c', `sandbox_mode=${args.sandbox || 'workspace-write'}`, '-c', 'sandbox_workspace_write.network_access=true'];
     if (args.model) common.push('-m', args.model);
     const argv = state.session ? ['exec', 'resume', state.session, ...common, text] : ['exec', ...common, text];
     log(`▶ Codex 第 ${turn} 轮${state.session ? `（线程 ${state.session.slice(0, 8)}…）` : ''}`);
@@ -227,7 +235,7 @@ function codexDriver(onFinal) {
     return false;
   }
   const line = '─'.repeat(56);
-  log(`\n${line}\n ✅ 已接入「${me.spaceName}」：${me.name}（${me.roleLabel}）\n    AI：${agent === 'codex' ? 'Codex' : 'Claude Code'}${fullAuto ? '（允许执行任何命令）' : '（可改文件、调用空间接口）'}\n    工作目录：${cwd}\n    网页上发给它的消息会直接进入它的会话；${autonomous ? '空闲时自动接下一项任务，' : ''}停了会自动续上。\n    保持这个窗口开着；按 Ctrl+C 断开，再运行同一条命令接着来。\n${line}`);
+  log(`\n${line}\n ✅ 已接入「${me.spaceName}」：${me.name}（${me.roleLabel}）\n    AI：${agent === 'codex' ? 'Codex' : 'Claude Code'}${fullAuto ? '（可改文件，可运行 git / npm / python 等开发命令；rm -rf、sudo、强推等危险命令始终禁止）' : '（可改文件、调用空间接口）'}\n    工作目录：${cwd}\n    网页上发给它的消息会直接进入它的会话；${autonomous ? '空闲时自动接下一项任务，' : ''}停了会自动续上。\n    保持这个窗口开着；按 Ctrl+C 断开，再运行同一条命令接着来。\n${line}`);
 
   const driver = (agent === 'codex' ? codexDriver : claudeDriver)(text => say(text));
   if (!state.session) driver.send(preamble(me) + '\n\n请先读接入说明，然后在频道里简短报到（说明你是谁、能做什么）。');

@@ -222,6 +222,28 @@ async function req(method, url, body, tok) {
       assert.equal((await fetch(`${B}/api/spaces/${S}/files/${pv.data.file.id}/preview?token=${thirdTok}`)).status, 404);
     } else console.log('（没有 ffmpeg，跳过文件区测试）');
 
+    // ---------- 安全 ----------
+    // 经隧道来的公网访客不能新建空间；本机可以
+    const viaTunnel = await fetch(`${B}/api/spaces`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.9', 'x-forwarded-for': '203.0.113.9' }, body: JSON.stringify({ name: 'x' }) });
+    assert.equal(viaTunnel.status, 403, '公网访客不应能新建空间');
+    assert.equal((await (await fetch(`${B}/api/host`)).json()).canCreate, true);
+    assert.equal((await (await fetch(`${B}/api/host`, { headers: { 'cf-connecting-ip': '203.0.113.9' } })).json()).canCreate, false);
+    // 换令牌：旧令牌立即失效，新令牌可用；员工不能换别人的
+    const victim = (await req('POST', `/api/spaces/${S}/members`, { name: '泄露者' }, admin)).data;
+    const oldTok = victim.connect.claude.match(/Bearer ([^"]+)/)[1];
+    assert.equal((await req('POST', `/api/spaces/${S}/members/${victim.member.id}/rotate`, null, b.token)).status, 403);
+    const rot = (await req('POST', `/api/spaces/${S}/members/${victim.member.id}/rotate`, null, admin)).data;
+    assert.notEqual(rot.token, oldTok);
+    assert.equal((await req('GET', `/api/spaces/${S}/state`, null, oldTok)).status, 401, '旧令牌应失效');
+    assert.equal((await req('GET', `/api/spaces/${S}/state`, null, rot.token)).status, 200);
+    assert.ok(rot.connect.plain.includes(rot.token) && !rot.connect.plain.includes(oldTok), '新的接入一句话应使用新令牌');
+    // 页面安全头
+    const page = await fetch(`${B}/s/${S}`);
+    assert.ok(page.headers.get('content-security-policy').includes("script-src 'self'"));
+    assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(page.headers.get('x-frame-options'), 'DENY');
+    assert.ok(!/\son[a-z]+=/i.test(await page.text()), '页面里不应有内联事件（CSP 会拦掉）');
+
     // 私信只对相关人可见
     await req('POST', `/api/spaces/${S}/messages`, { text: '私下说', to: a.memberId }, b.token);
     const adminView = (await req('GET', `/api/spaces/${S}/state`, null, admin)).data;
@@ -240,6 +262,11 @@ async function req(method, url, body, tok) {
 
     // 前端路由
     assert.equal((await fetch(`${B}/s/${S}`)).status, 200);
+    // 令牌猜测限流：同一来源连续失败 30 次后被拒绝（用伪造来源，不影响上面的请求）
+    const evil = { 'cf-connecting-ip': '198.51.100.7' };
+    for (let i = 0; i < 30; i++) await fetch(`${B}/api/spaces/${S}/state`, { headers: { ...evil, authorization: 'Bearer wrong' + i } });
+    assert.equal((await fetch(`${B}/api/spaces/${S}/state`, { headers: { ...evil, authorization: 'Bearer ' + admin } })).status, 429, '应被限流');
+    assert.equal((await req('GET', `/api/spaces/${S}/state`, null, admin)).status, 200, '其他来源不受影响');
     console.log('✓ 全部测试通过');
   } catch (e) {
     console.error('✗ 测试失败', e); process.exitCode = 1;

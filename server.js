@@ -239,7 +239,7 @@ function nextFor(space, me, since, req) {
 
 // ---------- HTTP 工具 ----------
 function send(res, code, obj) {
-  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+  res.writeHead(code, { 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
   res.end(JSON.stringify(obj));
 }
 function text(res, code, body) {
@@ -259,9 +259,33 @@ function auth(req, url, space) {
   if (!t) return null;
   const m = Object.values(space.members).find(x => x.token === t);
   if (m) { m.lastSeen = now(); }
+  if (!m) noteFail(req);
   return m || null;
 }
 // 一键启动（cli.js）把当前公网地址写进 data/public-url。在本机打开网页时，邀请链接、接入命令也要用公网地址，否则别的设备打不开
+// 谁能新建空间：默认只有这台电脑自己（经隧道来的公网访客不行）；设置了 AIWS_HOST_KEY 时，带上口令也可以
+const HOST_KEY = process.env.AIWS_HOST_KEY || '';
+const isLoopback = req => /^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress || '');
+// cloudflared 会加上这些头；看到它们就说明请求是从公网隧道转进来的，即使 TCP 连接来自本机
+const viaProxy = req => !!(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.headers['cf-ray']);
+const isLocal = req => isLoopback(req) && !viaProxy(req);
+const safeEq = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+function mayCreateSpace(req, b) {
+  if (isLocal(req)) return true;
+  const k = req.headers['x-host-key'] || b.hostKey || '';
+  return !!HOST_KEY && !!k && safeEq(k, HOST_KEY);
+}
+
+// 令牌猜测限流：同一来源 10 分钟内认证失败 30 次就暂时拒绝
+const authFails = new Map();
+const clientIp = req => String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+function tooManyFails(req) { const f = authFails.get(clientIp(req)); return !!f && f.n >= 30 && now() - f.at < 600000; }
+function noteFail(req) {
+  const ip = clientIp(req), f = authFails.get(ip);
+  if (!f || now() - f.at > 600000) authFails.set(ip, { n: 1, at: now() }); else f.n++;
+}
+setInterval(() => { for (const [k, v] of authFails) if (now() - v.at > 600000) authFails.delete(k); }, 600000).unref();
+
 let PUBLIC_URL = '';
 function readPublicUrl() {
   try { const u = fs.readFileSync(path.join(DATA_DIR, 'public-url'), 'utf8').trim().replace(/\/+$/, ''); return /^https?:\/\/[^\s/]+$/.test(u) ? u : ''; } catch { return ''; }
@@ -474,8 +498,11 @@ async function api(req, res, url) {
   const p = url.pathname.split('/').filter(Boolean); // ['api','spaces',sid,...]
   const method = req.method;
 
+  if (method === 'GET' && p.length === 2 && p[1] === 'host') return send(res, 200, { canCreate: isLocal(req), hostKey: !!HOST_KEY });
+
   if (method === 'POST' && p.length === 2 && p[1] === 'spaces') {
     const b = await readBody(req);
+    if (!mayCreateSpace(req, b)) return send(res, 403, { error: HOST_KEY ? '新建空间需要主机口令' : '只能在运行 Agent_room 的那台电脑上新建空间（打开 http://localhost 访问）。别的设备请用邀请链接加入已有空间' });
     const name = clip(b.name, 60) || '未命名空间';
     const ownerName = clip(b.ownerName, 40) || '管理员';
     const space = { id: id(5), name, inviteCode: token().slice(0, 16), createdAt: now(), members: {}, tasks: [], messages: [], logs: [], goal: { text: clip(b.goal, 4000), status: 'active' } };
@@ -488,6 +515,7 @@ async function api(req, res, url) {
   }
 
   if (p[1] !== 'spaces' || !p[2]) return send(res, 404, { error: '接口不存在' });
+  if (tooManyFails(req)) return send(res, 429, { error: '失败次数太多，请 10 分钟后再试' });
   const space = db.spaces[p[2]];
   if (!space) return send(res, 404, { error: '空间不存在' });
   const action = p[3];
@@ -503,7 +531,7 @@ async function api(req, res, url) {
       save();
       return send(res, 200, { token: existing.token, memberId: existing.id, role: existing.role, rejoined: true, guide: `${baseUrl(req)}/api/spaces/${space.id}/guide?token=${existing.token}` });
     }
-    if (b.invite !== space.inviteCode) return send(res, 403, { error: '邀请码无效或已重置' });
+    if (!b.invite || !safeEq(b.invite, space.inviteCode)) { noteFail(req); return send(res, 403, { error: '邀请码无效或已重置' }); }
     if (Object.keys(space.members).length >= 100) return send(res, 400, { error: '成员已满' });
     const m = { id: id(), name: clip(b.name, 40) || '匿名成员', kind: b.kind === 'human' ? 'human' : 'ai', model: clip(b.model, 40), role: 'employee', token: token(), joinedAt: now(), lastSeen: now(), status: '' };
     space.members[m.id] = m;
@@ -819,6 +847,17 @@ async function api(req, res, url) {
     return send(res, 200, { ok: true });
   }
 
+  if (method === 'POST' && action === 'members' && p[4] && p[5] === 'rotate') {
+    const target = space.members[p[4]];
+    if (!target) return send(res, 404, { error: '成员不存在' });
+    if (me.id !== target.id && me.role !== 'admin') return send(res, 403, { error: '只能更换自己的令牌' });
+    target.token = token();
+    for (const c of streams.get(space.id) || []) if (c.memberId === target.id) c.res.end(); // 旧令牌的连接立即断开
+    system(space, `${me.name} 更换了${me.id === target.id ? '自己' : ` ${target.name} `}的令牌，旧链接已失效`);
+    save();
+    return send(res, 200, { token: target.token, connect: target.kind === 'ai' ? connectInfo(req, space, target) : undefined });
+  }
+
   if (method === 'POST' && action === 'reset-invite') {
     if (me.role !== 'admin') return send(res, 403, { error: '只有管理员可以重置邀请链接' });
     space.inviteCode = token().slice(0, 16);
@@ -829,6 +868,12 @@ async function api(req, res, url) {
   return send(res, 404, { error: '接口不存在' });
 }
 
+const SEC_HEADERS = {
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
+  'referrer-policy': 'no-referrer', // 链接里带令牌，不能通过 Referer 泄露给外站
+  'content-security-policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+};
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -842,10 +887,10 @@ const server = http.createServer(async (req, res) => {
     try { return await api(req, res, url); } catch (e) { return send(res, 400, { error: e.message }); }
   }
   // 前端：/ 和 /s/<空间ID> 都返回单页应用
-  let file = url.pathname === '/' || url.pathname.startsWith('/s/') ? '/index.html' : url.pathname;
+  let file = url.pathname === '/' || url.pathname.startsWith('/s/') ? '/index.html' : url.pathname === '/favicon.ico' ? '/favicon.svg' : url.pathname;
   const fp = path.normalize(path.join(PUBLIC, file));
   if (!fp.startsWith(PUBLIC) || !fs.existsSync(fp) || fs.statSync(fp).isDirectory()) return send(res, 404, { error: 'not found' });
-  res.writeHead(200, { 'content-type': (MIME[path.extname(fp)] || 'application/octet-stream') + '; charset=utf-8', 'cache-control': 'no-cache' });
+  res.writeHead(200, { ...SEC_HEADERS, 'content-type': (MIME[path.extname(fp)] || 'application/octet-stream') + '; charset=utf-8', 'cache-control': 'no-cache' });
   fs.createReadStream(fp).pipe(res);
 });
 server.requestTimeout = 0;

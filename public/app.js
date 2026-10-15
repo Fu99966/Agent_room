@@ -19,9 +19,11 @@ const store = {
 let S = null; // 当前状态
 let sid = null, tok = null;
 
+document.addEventListener('click', e => { const c = e.target.closest('[data-close]'); if (c) c.closest('dialog')?.close(); });
+document.addEventListener('input', e => { if (e.target.id === 'dProg' && e.target.nextElementSibling) e.target.nextElementSibling.textContent = e.target.value + '%'; });
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2400); }
-async function call(method, url, body) {
-  const r = await fetch(url, { method, headers: { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}) }, body: body ? JSON.stringify(body) : undefined });
+async function call(method, url, body, extra) {
+  const r = await fetch(url, { method, headers: { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}), ...(extra || {}) }, body: body ? JSON.stringify(body) : undefined });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || `请求失败 ${r.status}`);
   if (method !== 'GET' && S && Date.now() - lastEvent > 40000) setTimeout(refresh, 100);
@@ -49,6 +51,12 @@ function route() {
 
 function home() {
   show('home');
+  fetch('/api/host').then(r => r.json()).then(h => {
+    if (h.canCreate) return;
+    const f = $('#createForm');
+    if (h.hostKey) { if (!f.hostKey) f.insertAdjacentHTML('afterbegin', '<label>主机口令<input name="hostKey" type="password" required autocomplete="off" /></label>'); }
+    else { f.querySelectorAll('input,button').forEach(x => x.disabled = true); f.insertAdjacentHTML('beforebegin', '<p class="rcpt warn">只能在运行 Agent_room 的那台电脑上新建空间。别的设备请用邀请链接或登录链接进入已有空间。</p>'); }
+  }).catch(() => {});
   const list = Object.entries(store.all());
   $('#mySpaces').innerHTML = list.length ? `<h3>本设备已加入的空间</h3>${list.map(([id, v]) => `<a class="space-link" href="/s/${id}">${esc(v.name || id)}<span>${ROLE[v.role] || ''}</span></a>`).join('')}` : '';
 }
@@ -56,7 +64,7 @@ $('#createForm').onsubmit = async e => {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(e.target));
   try {
-    const r = await call('POST', '/api/spaces', f);
+    const r = await call('POST', '/api/spaces', f, f.hostKey ? { 'x-host-key': f.hostKey } : undefined);
     store.set(r.spaceId, { token: r.token, name: f.name, role: 'admin' });
     history.pushState(null, '', `/s/${r.spaceId}`);
     route();
@@ -244,7 +252,7 @@ $('#runnerBtn').onclick = () => {
 };
 $('#runnerDlg').onclick = async e => {
   const p = e.target.closest('[data-pick]');
-  if (p) { try { const info = await call('GET', `/api/spaces/${sid}/members/${p.dataset.pick}/connect`); $('#runnerDlg').close(); openConnect(info, member(p.dataset.pick)?.name || '', 'online'); } catch (err) { toast(err.message); } return; }
+  if (p) { try { const info = await call('GET', `/api/spaces/${sid}/members/${p.dataset.pick}/connect`); $('#runnerDlg').close(); openConnect(info, member(p.dataset.pick)?.name || '', 'online', p.dataset.pick); } catch (err) { toast(err.message); } return; }
   if (e.target.closest('[data-addfirst]')) { e.preventDefault(); $('#runnerDlg').close(); $('#addMemberBtn').click(); }
 };
 
@@ -319,7 +327,7 @@ function renderHeader() {
   $('#loginLinkBtn').onclick = async () => {
     const link = `${ORIGIN()}/s/${sid}#key=${tok}`;
     await navigator.clipboard.writeText(link).catch(() => prompt('复制你的登录链接（别发给别人）：', link));
-    toast('已复制登录链接。换浏览器、换设备或地址变了，用它就能以你的身份回来。别发给别人');
+    toast('已复制登录链接。换浏览器、换设备或地址变了，用它就能以你的身份回来。别发给别人；万一泄露，在接入弹窗里给自己换令牌');
   };
   $('#newTaskBtn').classList.toggle('hidden', !lead());
   document.title = `${S.space.name} · AI 协作空间`;
@@ -357,7 +365,7 @@ $('#memberList').onclick = async e => {
   const lg = e.target.closest('[data-logs]');
   if (lg) { document.querySelector('[data-tab=logs]').click(); $('#logFilter').value = lg.dataset.logs; return renderLogs(); }
   const b = e.target.closest('button'); if (!b) return;
-  if (b.dataset.connect) { try { openConnect(await call('GET', `/api/spaces/${sid}/members/${b.dataset.connect}/connect`), member(b.dataset.connect)?.name || ''); } catch (err) { toast(err.message); } return; }
+  if (b.dataset.connect) { try { openConnect(await call('GET', `/api/spaces/${sid}/members/${b.dataset.connect}/connect`), member(b.dataset.connect)?.name || '', 'plain', b.dataset.connect); } catch (err) { toast(err.message); } return; }
   try {
     if (b.dataset.role) await call('POST', `/api/spaces/${sid}/members/${b.dataset.role}/role`, { role: b.dataset.to });
     if (b.dataset.kick && confirm(`确定把 ${member(b.dataset.kick)?.name} 移出空间？它的 token 会立即失效。`)) await call('DELETE', `/api/spaces/${sid}/members/${b.dataset.kick}`);
@@ -394,7 +402,7 @@ function openDetail(taskId) {
     ${(S.logs || []).some(l => l.taskId === t.id) ? `<div class="block"><h4>工作日志</h4><div class="task-logs">${S.logs.filter(l => l.taskId === t.id).slice(-50).map(logHTML).join('')}</div></div>` : ''}
     ${t.notes.length ? `<div class="block"><h4>记录</h4>${t.notes.map(n => `<p class="note"><b>${esc(n.byName)}</b> ${esc(n.text)} <small>${ago(n.at)}</small></p>`).join('')}</div>` : ''}
     <textarea id="dNote" rows="3" placeholder="${canReview() ? '验收意见（退回时必填）' : lead() ? '备注' : '进度说明；提交验收时写完整报告，支持 Markdown 表格'}"></textarea>
-    ${canWork ? `<label class="inline">进度 <input id="dProg" type="range" min="0" max="100" value="${t.progress}" oninput="this.nextElementSibling.textContent=this.value+'%'"><span>${t.progress}%</span></label>` : ''}
+    ${canWork ? `<label class="inline">进度 <input id="dProg" type="range" min="0" max="100" value="${t.progress}"><span>${t.progress}%</span></label>` : ''}
     ${lead() ? `<label class="inline">改派给 <select id="dAssignee"><option value="">待认领</option>${S.members.filter(m => m.role === 'employee').map(m => `<option value="${m.id}" ${m.id === t.assignee ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>` : ''}
     <div class="dlg-foot">
       ${lead() ? `<button class="danger-ghost" data-act="delete">删除</button><button data-act="reassign">保存执行人</button>` : ''}
@@ -580,8 +588,8 @@ function renderConnect(c) {
       + '<p class="muted small">不用运行任何命令。缺点：AI 的对话一结束它就停了，要你再去发一句；成员列表里有「复制唤醒语」。</p>',
     online: '<p class="muted small">在这个 AI 平时工作的那台电脑上，进到项目目录，运行下面这一行（需要 Node.js 18+，以及已登录的 claude 或 codex 命令行）：</p>'
       + copyBox('on1', '', k.online, 3)
-      + '<label class="inline small"><input type="checkbox" id="fullAuto" /> 允许它在这台电脑上执行任何命令（跑测试、git、安装依赖都不用再确认）</label>'
-      + '<p class="muted small">之后你在网页上发给它的消息会直接进入它的会话；它空闲时会自动接下一项任务，停了自动续上。窗口关掉就断开，再运行同一行命令接着来。<br>勾选上面一项后，空间里的监督者派的活它都能直接在这台电脑上执行，只在你信任空间里所有成员时勾选。<br>Cursor 聊天窗口里的 Grok 没有可接管的会话，请用「一句话接入」。</p>',
+      + '<label class="inline small"><input type="checkbox" id="fullAuto" /> 允许它运行常用开发命令（git、npm、python、pytest 等，不用再逐条确认；rm -rf、sudo、强制推送等危险命令始终禁止）</label>'
+      + '<p class="muted small">之后你在网页上发给它的消息会直接进入它的会话；它空闲时会自动接下一项任务，停了自动续上。窗口关掉就断开，再运行同一行命令接着来。<br>勾选后，监督者派的活它可以在这台电脑上直接跑测试、提交代码。只在你信任空间里所有成员时勾选。<br>Cursor 聊天窗口里的 Grok 没有可接管的会话，请用「一句话接入」。</p>',
     mcp: '<p class="muted small">让 AI 每次打开都自动连上空间（可选，一般不需要）。</p>'
       + '<details><summary>Claude Code</summary>' + copyBox('cc1', '终端运行一次：', k.claude, 2) + copyBox('cc2', '然后在 Claude Code 里发：', k.prompt, 4) + '</details>'
       + '<details><summary>Codex</summary>' + copyBox('cx1', '终端运行一次（会先备份 ~/.codex/config.toml）：', k.codex, 7) + copyBox('cx2', '然后在 Codex 里发：', k.prompt, 4) + '</details>'
@@ -591,13 +599,21 @@ function renderConnect(c) {
   const fa = $('#fullAuto');
   if (fa) fa.onchange = () => { $('#on1').value = k.online + (fa.checked ? ' --full-auto' : ''); };
 }
-function openConnect(info, name, tab = 'plain') {
+let connId = '';
+async function rotateToken() {
+  if (!connId || !confirm(`给「${connName}」换一个新令牌？旧的一句话、接入命令、MCP 配置会立即失效，需要把新的重新发给它。`)) return;
+  try { const r = await call('POST', `/api/spaces/${sid}/members/${connId}/rotate`); if (r.connect) { conn = r.connect; renderConnect(document.querySelector('.ctab.active')?.dataset.c || 'plain'); } toast('已换新令牌，旧的已失效'); } catch (err) { toast(err.message); }
+}
+function openConnect(info, name, tab = 'plain', id = '') {
+  connId = id;
   conn = info; connName = name;
   $('#connectTitle').textContent = `「${name}」的接入方式`;
   renderConnect(tab);
+  $('#rotateBtn').classList.toggle('hidden', !connId);
   $('#connectDlg').showModal();
 }
 document.querySelectorAll('.ctab').forEach(b => b.onclick = () => renderConnect(b.dataset.c));
+$('#rotateBtn').onclick = rotateToken;
 $('#connectDlg').onclick = async e => { const c = e.target.dataset.copy; if (c) { const el = $('#' + c); el.select(); await navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy')); toast('已复制'); } };
 $('#addMemberBtn').onclick = () => { $('#addForm').reset(); $('#addDlg').showModal(); };
 $('#addForm').onsubmit = async e => {
@@ -606,7 +622,7 @@ $('#addForm').onsubmit = async e => {
   try {
     const r = await call('POST', `/api/spaces/${sid}/members`, { ...f, kind: 'ai' });
     $('#addDlg').close();
-    openConnect(r.connect, r.member.name);
+    openConnect(r.connect, r.member.name, 'plain', r.member.id);
   } catch (err) { toast(err.message); }
 };
 

@@ -97,7 +97,9 @@ Developed and tested on macOS; CI also runs on Ubuntu. `share.sh` and `upload.sh
 This is a **self-hosted tool for individuals and small teams**. Read [SECURITY.md](SECURITY.md) before exposing it publicly. In short:
 
 - No accounts — identity is a token embedded in links. The admin link is effectively the admin password.
-- Anyone who can reach the URL can create a room; add your own access control for public deployments.
+- Only the host machine can create rooms; visitors coming through the public tunnel can only enter existing rooms with an invite / login link.
+- Tokens can be rotated from the connect dialog (old links stop working immediately); repeated auth failures are rate-limited.
+- The bridge's `--full-auto` allows common dev commands only; `rm -rf`, `sudo`, force-push etc. are denied at the permission layer.
 - Agents pass messages to each other, so prompt injection between agents is possible. The instructions tell agents to ask a human before deleting lots of files, force-pushing, deploying or using credentials, but this relies on the agent complying.
 - `data/` holds every token, chat and upload. It is git-ignored — never commit it.
 
