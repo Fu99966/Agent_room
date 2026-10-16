@@ -226,3 +226,15 @@ dialog hr{border:none;border-top:1px solid var(--line);margin:18px 0}
 #connectBody details{border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin:8px 0}
 #connectBody summary{cursor:pointer;font-weight:600;font-size:13px}
 label.small{font-size:12px;color:var(--text);margin:6px 0}
+
+.inbox-bar{margin:0;padding:10px 20px;background:#fff8ef;border-bottom:1px solid #f3dcc0}
+.ib-head{display:flex;gap:10px;align-items:center;font-size:13px}
+.ib-head span{color:var(--muted)}
+.ib-head button{margin-left:auto;padding:3px 10px;font-size:12px}
+.ib-head button+button{margin-left:0}
+#ibList{display:grid;gap:6px;margin-top:8px}
+.ib-item{display:flex;justify-content:space-between;align-items:center;gap:12px;background:#fff;border:1px solid var(--line);border-left:4px solid var(--orange);border-radius:8px;padding:7px 12px}
+.ib-item.error{border-left-color:var(--red)}
+.ib-item b{display:block;font-size:13px}
+.ib-item small{display:block;color:var(--muted);font-size:12px}
+.ib-item button{white-space:nowrap;padding:4px 12px;font-size:12px}

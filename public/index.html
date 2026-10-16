@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI 协作空间</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/styles.css?v=14" />
+  <link rel="stylesheet" href="/styles.css?v=15" />
 </head>
 <body>
   <!-- 首页：创建空间 -->
@@ -56,6 +56,7 @@
         <button id="inviteBtn" class="ghost hidden">邀请链接</button>
       </div>
     </header>
+    <div id="inboxBar" class="inbox-bar hidden"><div class="ib-head"><b>📥 需要你处理</b><span id="ibCount"></span><button id="ibNotify" class="ghost hidden" type="button">开启桌面提醒</button><button id="ibToggle" class="ghost" type="button">收起</button></div><div id="ibList"></div></div>
     <div id="goalBar" class="goal-bar">
       <span class="g-label">🎯 空间目标</span>
       <span id="goalText" class="g-text"></span>
@@ -190,6 +191,6 @@
   <dialog id="detailDlg"><div id="detailBody"></div></dialog>
 
   <div id="toast"></div>
-  <script src="/app.js?v=14"></script>
+  <script src="/app.js?v=15"></script>
 </body>
 </html>

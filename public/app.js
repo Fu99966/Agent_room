@@ -169,7 +169,44 @@ function md(src) {
 }
 const member = id => S.members.find(m => m.id === id);
 
-function renderAll() { renderHeader(); renderGoal(); renderLive(); renderMembers(); renderBoard(); renderMsgs(); renderLogs(); }
+function renderAll() { renderHeader(); renderInbox(); renderGoal(); renderLive(); renderMembers(); renderBoard(); renderMsgs(); renderLogs(); }
+
+// ---------- 老板收件箱：只列需要你处理的事 ----------
+const seenInbox = new Set(JSON.parse(localStorage.getItem('aiws-inbox-seen') || '[]'));
+let ibCollapsed = localStorage.getItem('aiws-inbox-collapsed') === '1';
+const wakeText = () => `空间「${S.space.name}」里有发给你的新消息和任务。请调用 ai-space 的 next 工具（没有 MCP 就按接入说明调用 /next）读取并处理派给你的任务，做完一项再调用 next 取下一项，直到返回 stop=true。高风险操作先问我。`;
+function renderInbox() {
+  const bar = $('#inboxBar');
+  const items = S.inbox || [];
+  bar.classList.toggle('hidden', S.me.role !== 'admin' || !items.length);
+  if (!items.length) return;
+  $('#ibCount').textContent = `${items.length} 项`;
+  $('#ibToggle').textContent = ibCollapsed ? '展开' : '收起';
+  $('#ibList').classList.toggle('hidden', ibCollapsed);
+  const btn = i => ({ wake: '复制唤醒语', task: '打开任务', goal: '设置目标', members: '去设置' })[i.action?.type] || '';
+  $('#ibList').innerHTML = items.map(i => `<div class="ib-item ${i.level}"><div><b>${esc(i.title)}</b><small>${esc(i.detail)}</small></div>${btn(i) ? `<button type="button" data-ib="${esc(i.key)}">${btn(i)}</button>` : ''}</div>`).join('');
+  $('#ibNotify').classList.toggle('hidden', !('Notification' in window) || Notification.permission !== 'default');
+  // 新出现的事项：桌面提醒（只提醒一次）
+  const fresh = items.filter(i => !seenInbox.has(i.key + '|' + i.title));
+  if (fresh.length && 'Notification' in window && Notification.permission === 'granted' && document.hidden)
+    new Notification(`Agent_room · ${S.space.name}`, { body: fresh.map(i => i.title).join('\n'), tag: 'aiws-inbox' });
+  for (const i of items) seenInbox.add(i.key + '|' + i.title);
+  localStorage.setItem('aiws-inbox-seen', JSON.stringify([...seenInbox].slice(-200)));
+  document.title = `(${items.length}) ${S.space.name} · AI 协作空间`;
+}
+$('#ibToggle').onclick = () => { ibCollapsed = !ibCollapsed; localStorage.setItem('aiws-inbox-collapsed', ibCollapsed ? '1' : '0'); renderInbox(); };
+$('#ibNotify').onclick = async () => { await Notification.requestPermission(); renderInbox(); if (Notification.permission === 'granted') toast('已开启：页面在后台时，有新的待处理事项会弹出提醒'); };
+$('#ibList').onclick = async e => {
+  const b = e.target.closest('[data-ib]'); if (!b) return;
+  const i = (S.inbox || []).find(x => x.key === b.dataset.ib); if (!i) return;
+  const act = i.action || {};
+  if (act.type === 'task') openDetail(act.task);
+  else if (act.type === 'goal') $('#goalEdit').click();
+  else if (act.type === 'members') $('#memberList').scrollIntoView({ behavior: 'smooth' });
+  else if (act.type === 'wake') { await navigator.clipboard.writeText(wakeText()).catch(() => prompt('复制这句话：', wakeText())); toast(`已复制唤醒语，去 ${member(act.member)?.name || '它'} 的对话框里粘贴发送`); }
+};
+// 收件箱每分钟刷新一次（“已停多久”这类事项要靠时间推移才会出现）
+setInterval(async () => { if (S && S.me.role === 'admin') { try { const r = await call('GET', `/api/spaces/${sid}/inbox?boss=1`); S.inbox = r.items; renderInbox(); } catch { } } }, 60000);
 
 // ---------- 空间目标 ----------
 function renderGoal() {
@@ -330,7 +367,7 @@ function renderHeader() {
     toast('已复制登录链接。换浏览器、换设备或地址变了，用它就能以你的身份回来。别发给别人；万一泄露，在接入弹窗里给自己换令牌');
   };
   $('#newTaskBtn').classList.toggle('hidden', !lead());
-  document.title = `${S.space.name} · AI 协作空间`;
+  if (!(S.inbox || []).length) document.title = `${S.space.name} · AI 协作空间`;
 }
 
 function renderMembers() {

@@ -131,6 +131,7 @@ function snapshot(space, me) {
     goal: (({ doc, ...g }) => ({ ...g, docName: doc?.name || '', docSize: doc?.size || 0, docBy: doc?.uploadedBy || '' }))(space.goal),
     inviteCode: me.role === 'admin' || me.role === 'supervisor' ? space.inviteCode : undefined,
     publicUrl: PUBLIC_URL,
+    inbox: me.role === 'admin' ? inboxFor(space) : undefined,
   };
 }
 function addMessage(space, from, text, opts = {}) {
@@ -196,6 +197,47 @@ const goalForAI = (space, req) => {
 
 // ---------- 下一步：告诉每个 AI 现在该做什么 ----------
 const LOOP_TAIL = '做完后：写工作日志 → 更新任务状态 → 再调用 /next 取下一项（用户已授权持续工作；涉及删除、强推、发布、凭据等高风险操作时先停下来请管理员确认）。';
+// 退回后重复提交检测：和被退回的那份报告几乎一样，就直接打回，并把退回意见原样返回（任务 M 连续 6 次交同一版本的教训）
+function similarity(a, b) {
+  const grams = x => { const t = String(x || '').replace(/\s+/g, ''); const g = new Set(); for (let i = 0; i < t.length - 2; i++) g.add(t.slice(i, i + 3)); return g; };
+  const A = grams(a), B = grams(b);
+  if (!A.size || !B.size) return 0;
+  let n = 0; for (const x of A) if (B.has(x)) n++;
+  return n / Math.max(A.size, B.size);
+}
+// ---------- 老板收件箱：只列需要人来处理的事 ----------
+// 规则都是从这几天的真实卡点里来的：AI 停了没人叫、验收没人做、同一份东西被退回好几次、员工卡住、目标没写清楚。
+function inboxFor(space) {
+  const items = [], T = now(), mem = Object.values(space.members);
+  const ago = ms => ms < 3600000 ? `${Math.round(ms / 60000)} 分钟` : ms < 86400000 ? `${Math.round(ms / 3600000)} 小时` : `${Math.round(ms / 86400000)} 天`;
+  const lastAct = m => Math.max(m.lastSeen || 0, m.lastNextAt || 0, m.bridge?.at || 0);
+  const open = space.tasks.filter(t => t.status !== 'approved');
+  const g = space.goal || {};
+  if (g.status !== 'achieved' && (!g.text || g.text.length < 8) && !g.doc)
+    items.push({ key: 'goal', level: 'warn', title: '空间目标还没写清楚', detail: `现在的目标是「${g.text || '空'}」。监督者没法判断什么时候算完成。`, action: { type: 'goal' } });
+  for (const m of mem.filter(m => m.kind === 'ai')) {
+    const has = open.filter(t => t.assignee === m.id && ['todo', 'doing', 'rejected', 'blocked'].includes(t.status));
+    const waitReview = m.role !== 'employee' && open.some(t => t.status === 'submitted');
+    const idle = T - lastAct(m);
+    if ((has.length || waitReview) && lastAct(m) && idle > 20 * 60000)
+      items.push({ key: 'stopped:' + m.id, level: idle > 3 * 3600000 ? 'error' : 'warn', title: `${m.name} 已停 ${ago(idle)}`, detail: has.length ? `手上还有：${has.map(t => t.title.slice(0, 18)).join('、')}` : '有任务在等它验收', action: { type: 'wake', member: m.id } });
+  }
+  for (const t of open) {
+    const r = space.members[t.reviewer];
+    if (t.status === 'submitted' && T - (t.submittedAt || t.updatedAt) > 30 * 60000)
+      items.push({ key: 'review:' + t.id, level: 'warn', title: `「${t.title.slice(0, 24)}」等验收 ${ago(T - (t.submittedAt || t.updatedAt))}`, detail: `验收人：${r ? r.name : '没有监督者'}`, action: { type: 'task', task: t.id } });
+    const rejects = space.messages.filter(m => m.kind === 'reject' && m.taskId === t.id).length;
+    if (rejects >= 3 || (t.dupBlocks || 0) >= 2)
+      items.push({ key: 'loop:' + t.id, level: 'error', title: `「${t.title.slice(0, 24)}」已被退回 ${rejects} 次`, detail: (t.dupBlocks || 0) >= 2 ? `执行的 AI 还在原样重交（被拦下 ${t.dupBlocks} 次），多半没读到退回意见。去它的对话框里直接把退回意见贴给它。` : '反复返工，可能是要求没讲清楚，或者执行的 AI 没读到意见。值得你看一眼。', action: { type: 'task', task: t.id } });
+    if (t.status === 'blocked')
+      items.push({ key: 'blocked:' + t.id, level: 'warn', title: `「${t.title.slice(0, 24)}」受阻`, detail: ([...t.notes].reverse()[0]?.text || '').slice(0, 120), action: { type: 'task', task: t.id } });
+  }
+  if (!mem.some(m => m.role === 'supervisor') && open.length)
+    items.push({ key: 'nosup', level: 'warn', title: '空间里没有监督者', detail: '任务只能由你来验收。可以把一个 AI 设成监督者。', action: { type: 'members' } });
+  const rank = { error: 0, warn: 1, info: 2 };
+  return items.sort((a, b) => rank[a.level] - rank[b.level]);
+}
+
 function nextFor(space, me, since, req) {
   const g = goalForAI(space, req);
   const msgs = space.messages.filter(x => x.at > since && x.from !== me.id && (!x.to || x.to === me.id) && x.kind !== 'system');
@@ -587,6 +629,10 @@ async function api(req, res, url) {
 
   if (action === 'files') return FILES.handle(req, res, url, space, me, p);
 
+  if (method === 'GET' && action === 'inbox' && url.searchParams.get('boss') === '1') {
+    if (me.role !== 'admin') return send(res, 403, { error: '只有管理员能看老板收件箱' });
+    return send(res, 200, { items: inboxFor(space) });
+  }
   if (method === 'GET' && action === 'state') return send(res, 200, snapshot(space, me));
 
   if (method === 'GET' && action === 'events') {
@@ -770,6 +816,15 @@ async function api(req, res, url) {
       if (b.status && !['doing', 'submitted', 'blocked'].includes(b.status)) return send(res, 403, { error: '员工只能把状态设为 doing / submitted / blocked' });
       if (task.status === 'approved') return send(res, 403, { error: '任务已验收' });
       if (b.status === 'submitted' && !clip(b.result ?? task.result, 20000)) return send(res, 400, { error: '提交验收必须在 result 里写完整报告（做了什么、结果数据、遗留问题），监督者会在频道里看到' });
+      if (b.status === 'submitted' && task.rejectedResult) {
+        const sim = similarity(clip(b.result ?? task.result, 20000), task.rejectedResult);
+        if (sim >= 0.9) {
+          task.dupBlocks = (task.dupBlocks || 0) + 1;
+          if (task.dupBlocks === 2) system(space, `⚠ ${me.name} 第 ${task.dupBlocks} 次把被退回的「${task.title}」原样重交，已被拦下。它可能没读到退回意见，需要人去看一下`);
+          save();
+          return send(res, 409, { error: `这份报告和被退回的那份几乎一样（相似度 ${Math.round(sim * 100)}%），没有提交。请先按退回意见修改，再提交：\n\n${task.rejectNote || '见任务 notes'}`, rejectNote: task.rejectNote || '', similarity: Math.round(sim * 100) });
+        }
+      }
     } else {
       if (['approved', 'rejected'].includes(b.status) && !canReview(space, me)) {
         const r = reviewerOf(space, task);
@@ -791,6 +846,8 @@ async function api(req, res, url) {
     if (b.note) task.notes.push({ by: me.id, byName: me.name, text: clip(b.note, 4000), at: now() });
     if (task.status === 'approved') task.progress = 100;
     if (['approved', 'rejected'].includes(b.status)) { task.reviewedBy = me.id; task.reviewedByName = me.name; task.reviewedAt = now(); }
+    if (b.status === 'rejected') { task.rejectedResult = task.result; task.rejectNote = clip(b.note, 4000); task.dupBlocks = 0; }
+    if (b.status === 'approved') { delete task.rejectedResult; delete task.rejectNote; delete task.dupBlocks; }
     if (b.status === 'submitted') { task.submittedAt = now(); task.reviewer = reviewerOf(space, task)?.id || null; }
     task.updatedAt = now();
     const label = { todo: '待开始', doing: '进行中', submitted: '已提交待验收', blocked: '受阻', approved: '已验收通过', rejected: '被退回修改' };

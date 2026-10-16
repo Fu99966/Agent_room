@@ -222,6 +222,28 @@ async function req(method, url, body, tok) {
       assert.equal((await fetch(`${B}/api/spaces/${S}/files/${pv.data.file.id}/preview?token=${thirdTok}`)).status, 404);
     } else console.log('（没有 ffmpeg，跳过文件区测试）');
 
+    // 退回后原样重交会被拦下，并返回退回意见；改过的报告可以正常提交
+    const dupT = (await req('POST', `/api/spaces/${S}/tasks`, { title: '重复提交测试', assignee: b.memberId }, a.token)).data;
+    const rep1 = '## 交付\ngrasp 时刻 42605500，三联图已上传，画面和 live 一致。\n| 项 | 值 |\n|---|---|\n| grasp | 42605500 |';
+    await req('PATCH', `/api/spaces/${S}/tasks/${dupT.id}`, { status: 'submitted', result: rep1 }, b.token);
+    await req('PATCH', `/api/spaces/${S}/tasks/${dupT.id}`, { status: 'rejected', note: 'grasp 换成 23.0 s，加 ViewCamera' }, a.token);
+    const dup = await req('PATCH', `/api/spaces/${S}/tasks/${dupT.id}`, { status: 'submitted', result: rep1 + ' ' }, b.token);
+    assert.equal(dup.status, 409, '原样重交应被拦下'); assert.ok(dup.data.error.includes('23.0 s'), '应返回退回意见');
+    const fixed = await req('PATCH', `/api/spaces/${S}/tasks/${dupT.id}`, { status: 'submitted', result: '## 交付\n1. grasp 改为 23.0 s，附原视频截图 video-23s.png\n2. 新建 /World/ViewCamera，手占画面 46%\n3. 完整导出 212 MB，未解析 0，非 ASCII 0\n4. 影子分开' }, b.token);
+    assert.equal(fixed.status, 200, '改过的报告应能提交');
+
+    // 老板收件箱：只有管理员能看；退回 3 次的任务会出现
+    for (let i = 0; i < 2; i++) {
+      await req('PATCH', `/api/spaces/${S}/tasks/${dupT.id}`, { status: 'rejected', note: '第' + i + '次退回：继续改' }, a.token);
+      await req('PATCH', `/api/spaces/${S}/tasks/${dupT.id}`, { status: 'submitted', result: '## 交付 第' + i + '版\n' + 'x'.repeat(i * 50) + '\n新附件 v' + i + '.png' }, b.token);
+    }
+    await req('PATCH', `/api/spaces/${S}/tasks/${dupT.id}`, { status: 'rejected', note: '第三次退回' }, a.token);
+    assert.equal((await req('GET', `/api/spaces/${S}/inbox?boss=1`, null, b.token)).status, 403, '员工不能看老板收件箱');
+    const inbox = (await req('GET', `/api/spaces/${S}/inbox?boss=1`, null, admin)).data.items;
+    assert.ok(inbox.some(i => i.key === 'loop:' + dupT.id), '退回 3 次的任务应进收件箱');
+    assert.ok((await req('GET', `/api/spaces/${S}/state`, null, admin)).data.inbox, '管理员的 state 里带收件箱');
+    assert.equal((await req('GET', `/api/spaces/${S}/state`, null, b.token)).data.inbox, undefined, '员工的 state 里不带');
+
     // ---------- 安全 ----------
     // 经隧道来的公网访客不能新建空间；本机可以
     const viaTunnel = await fetch(`${B}/api/spaces`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.9', 'x-forwarded-for': '203.0.113.9' }, body: JSON.stringify({ name: 'x' }) });

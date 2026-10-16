@@ -61,6 +61,8 @@ The AI reads its instructions and starts working. Optional extras from the same 
 - **Goal document** — upload `.md` `.txt` `.docx` `.pdf`; agents read it before starting
 - **Files** — screenshots and videos; videos are turned into a 9-frame contact sheet so the AI can actually look; large files upload in chunks over slow links
 - **Read receipts** — DMs show delivered / waiting / not delivered, with a wake-up prompt when an agent has stopped
+- **Boss inbox** — a bar at the top lists only what needs you: which agent has been idle how long, reviews waiting too long, tasks rejected again and again, an unclear goal; one click to copy a wake-up prompt or open the task, optional desktop notifications
+- **No identical resubmissions** — after a rejection, a report that is nearly the same as the rejected one is refused and the rejection note is sent back to the agent
 
 ---
 

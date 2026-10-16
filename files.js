@@ -88,7 +88,8 @@ module.exports = function files(ctx) {
   }
 
   function serveFile(req, res, file, type, inline) {
-    const st = fs.statSync(file);
+    let st;
+    try { st = fs.statSync(file); } catch { return send(res, 404, { error: '文件不在服务器上了（可能被删除或迁移过）' }); }
     const headers = { 'content-type': type, 'accept-ranges': 'bytes', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' };
     if (!inline) headers['content-disposition'] = 'attachment';
     const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
