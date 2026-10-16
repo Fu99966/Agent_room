@@ -239,8 +239,8 @@ async function req(method, url, body, tok) {
     }
     await req('PATCH', `/api/spaces/${S}/tasks/${dupT.id}`, { status: 'rejected', note: '第三次退回' }, a.token);
     assert.equal((await req('GET', `/api/spaces/${S}/inbox?boss=1`, null, b.token)).status, 403, '员工不能看老板收件箱');
-    const inbox = (await req('GET', `/api/spaces/${S}/inbox?boss=1`, null, admin)).data.items;
-    assert.ok(inbox.some(i => i.key === 'loop:' + dupT.id), '退回 3 次的任务应进收件箱');
+    const bossItems = (await req('GET', `/api/spaces/${S}/inbox?boss=1`, null, admin)).data.items;
+    assert.ok(bossItems.some(i => i.key === 'loop:' + dupT.id), '退回 3 次的任务应进收件箱');
     assert.ok((await req('GET', `/api/spaces/${S}/state`, null, admin)).data.inbox, '管理员的 state 里带收件箱');
     assert.equal((await req('GET', `/api/spaces/${S}/state`, null, b.token)).data.inbox, undefined, '员工的 state 里不带');
 
