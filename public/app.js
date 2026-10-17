@@ -121,6 +121,7 @@ async function enter() {
   });
   on('task', t => { const i = S.tasks.findIndex(x => x.id === t.id); i < 0 ? S.tasks.push(t) : (S.tasks[i] = t); renderBoard(); if ($('#detailDlg').open && $('#detailDlg').dataset.id === t.id) openDetail(t.id); });
   on('public', ({ url }) => { S.publicUrl = url; if (url) toast('公网地址已更新，邀请链接和接入命令已换成新地址'); });
+  on('knocks', () => { refreshInbox(); });
   on('goal', g => { S.goal = g; renderGoal(); if (g.status === 'achieved') toast('🎯 空间目标已达成'); });
   on('tasks', ts => { S.tasks = ts; renderBoard(); });
   on('taskDeleted', ({ id }) => { S.tasks = S.tasks.filter(t => t.id !== id); renderBoard(); });
@@ -184,7 +185,8 @@ function renderInbox() {
   $('#ibToggle').textContent = ibCollapsed ? '展开' : '收起';
   $('#ibList').classList.toggle('hidden', ibCollapsed);
   const btn = i => ({ wake: '复制唤醒语', task: '打开任务', goal: '设置目标', members: '去设置' })[i.action?.type] || '';
-  $('#ibList').innerHTML = items.map(i => `<div class="ib-item ${i.level}"><div><b>${esc(i.title)}</b><small>${esc(i.detail)}</small></div>${btn(i) ? `<button type="button" data-ib="${esc(i.key)}">${btn(i)}</button>` : ''}</div>`).join('');
+  const knockBtns = i => `<span class="kb"><button type="button" class="primary" data-approve="${esc(i.action.ticket)}">批准为员工</button><button type="button" data-approve="${esc(i.action.ticket)}" data-role="supervisor">批准为监督者</button><button type="button" class="danger-ghost" data-reject="${esc(i.action.ticket)}">拒绝</button></span>`;
+  $('#ibList').innerHTML = items.map(i => `<div class="ib-item ${i.level}"><div><b>${esc(i.title)}</b><small>${esc(i.detail)}</small></div>${i.action?.type === 'knock' ? knockBtns(i) : btn(i) ? `<button type="button" data-ib="${esc(i.key)}">${btn(i)}</button>` : ''}</div>`).join('');
   $('#ibNotify').classList.toggle('hidden', !('Notification' in window) || Notification.permission !== 'default');
   // 新出现的事项：桌面提醒（只提醒一次）
   const fresh = items.filter(i => !seenInbox.has(i.key + '|' + i.title));
@@ -197,6 +199,14 @@ function renderInbox() {
 $('#ibToggle').onclick = () => { ibCollapsed = !ibCollapsed; localStorage.setItem('aiws-inbox-collapsed', ibCollapsed ? '1' : '0'); renderInbox(); };
 $('#ibNotify').onclick = async () => { await Notification.requestPermission(); renderInbox(); if (Notification.permission === 'granted') toast('已开启：页面在后台时，有新的待处理事项会弹出提醒'); };
 $('#ibList').onclick = async e => {
+  const ap = e.target.closest('[data-approve]'), rj = e.target.closest('[data-reject]');
+  if (ap || rj) {
+    try {
+      await call('POST', `/api/spaces/${sid}/knocks/${(ap || rj).dataset[ap ? 'approve' : 'reject']}/${ap ? 'approve' : 'reject'}`, ap ? { role: ap.dataset.role || 'employee' } : {});
+      toast(ap ? '已批准，它马上就会进来' : '已拒绝'); refreshInbox();
+    } catch (err) { toast(err.message); }
+    return;
+  }
   const b = e.target.closest('[data-ib]'); if (!b) return;
   const i = (S.inbox || []).find(x => x.key === b.dataset.ib); if (!i) return;
   const act = i.action || {};
@@ -206,7 +216,8 @@ $('#ibList').onclick = async e => {
   else if (act.type === 'wake') { await navigator.clipboard.writeText(wakeText()).catch(() => prompt('复制这句话：', wakeText())); toast(`已复制唤醒语，去 ${member(act.member)?.name || '它'} 的对话框里粘贴发送`); }
 };
 // 收件箱每分钟刷新一次（“已停多久”这类事项要靠时间推移才会出现）
-setInterval(async () => { if (S && S.me.role === 'admin') { try { const r = await call('GET', `/api/spaces/${sid}/inbox?boss=1`); S.inbox = r.items; renderInbox(); } catch { } } }, 60000);
+async function refreshInbox() { if (S && S.me.role === 'admin') { try { const r = await call('GET', `/api/spaces/${sid}/inbox?boss=1`); S.inbox = r.items; renderInbox(); } catch { } } }
+setInterval(refreshInbox, 60000);
 
 // ---------- 空间目标 ----------
 function renderGoal() {
@@ -361,6 +372,7 @@ function renderHeader() {
   $('#meLine').textContent = `我：${S.me.name} · ${ROLE[S.me.role]}`;
   $('#inviteBtn').classList.toggle('hidden', !lead());
   $('#addMemberBtn').classList.toggle('hidden', S.me.role !== 'admin');
+  $('#inviteAiBtn').classList.toggle('hidden', S.me.role !== 'admin');
   $('#loginLinkBtn').onclick = async () => {
     const link = `${ORIGIN()}/s/${sid}#key=${tok}`;
     await navigator.clipboard.writeText(link).catch(() => prompt('复制你的登录链接（别发给别人）：', link));
@@ -383,6 +395,7 @@ function renderMembers() {
         ${m.status ? `<small>${esc(m.status)}</small>` : ''}
         ${m.kind === 'ai' && !m.active && m.lastSeen ? `<small class="stopped">⏸ 已停止 · 最后活动 ${ago(Math.max(m.lastNextAt || 0, m.lastSeen || 0))} · <a href="#" data-wake="${m.id}">复制唤醒语</a></small>` : ''}
         ${m.bridge && m.bridge.state !== 'offline' && Date.now() - m.bridge.at < 2 * 60000 ? `<small class="bridge ${m.bridge.state}">⚡ 实时连接 · ${({ working: '正在工作', idle: '待命' })[m.bridge.state] || ''}</small>` : ''}
+        ${m.device?.host || m.device?.ip ? `<small class="dev">🖥 ${esc(m.device.host || '')}${m.device.ip ? ` · ${esc(m.device.ip)}` : ''}${m.device.tool ? ` · ${esc(m.device.tool)}` : ''}</small>` : ''}
         <small class="loglink" data-logs="${m.id}">${m.lastLogAt ? `最后日志 ${ago(m.lastLogAt)}` : '暂无日志'} · 查看</small>
       </div>
       ${S.me.role === 'admin' && m.role !== 'admin' ? `
@@ -613,6 +626,17 @@ $('#msgForm').onsubmit = async e => {
   const text = $('#msgText').value.trim(); if (!text) return;
   try { await call('POST', `/api/spaces/${sid}/messages`, { text, to: $('#msgTo').value || undefined }); $('#msgText').value = ''; } catch (err) { toast(err.message); }
 };
+
+// ---------- 一句话拉 AI 进来（局域网） ----------
+$('#inviteAiBtn').onclick = () => {
+  const lan = S.lan || { mdns: location.origin, ips: [] };
+  const sentence = () => `请加入我在局域网里自己搭的 AI 团队看板 Agent_room：用 curl 读 ${lan.mdns} 的接口说明（打不开就用 ${lan.ips[0] || lan.mdns}），按说明敲门，介绍里写上你的名字、hostname、模型和所在工具。我在网页上批准后，保存令牌，然后处理派给你的任务，做完一项接着取下一项。${$('#withRules').checked ? '另外，我同意你按说明里的约定，把这个房间记进本项目的规则文件，以后开新对话先去看有没有派给你的任务。' : ''}删除大量文件、强制推送、发布上线、动用密钥前先问我。`;
+  $('#oneLine').value = sentence();
+  $('#withRules').onchange = () => { $('#oneLine').value = sentence(); };
+  $('#lanHint').innerHTML = `首选地址 <code class="ic">${esc(lan.mdns)}</code> 是这台电脑的局域网名字，IP 变了也能用。备用：${lan.ips.map(x => `<code class="ic">${esc(x)}</code>`).join(' ') || '无'}。<br>不在同一个网络里的 AI 打不开，这是故意的。`;
+  $('#inviteAiDlg').showModal();
+};
+$('#inviteAiDlg').onclick = async e => { const c = e.target.dataset.copy; if (c) { const el = $('#' + c); el.select(); await navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy')); toast('已复制，发给任意一个 AI 就行'); } };
 
 // ---------- 添加 AI 成员 / 接入方式 ----------
 let conn = null, connName = '';

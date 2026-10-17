@@ -4,7 +4,8 @@
 //   npm start                         （在项目目录里）
 //   npx github:Fu99966/Agent_room     （不用先下载代码）
 //
-// 可选参数：--local 只在本机用，不开公网隧道；--port 4300；--no-open 不自动打开浏览器；--no-beacon 不写 GitHub 地址牌
+// 默认局域网模式：同一网络里的 AI 一句话敲门加入，不开公网隧道。
+// 可选参数：--public 额外开 Cloudflare 公网隧道（含地址牌）；--port 4300；--no-open 不自动打开浏览器；--no-beacon 不写 GitHub 地址牌
 // 公网隧道用 Cloudflare 的免费临时隧道；本机没有 cloudflared 时会自动下载到 ~/.agent-room/bin。
 const fs = require('fs');
 const path = require('path');
@@ -20,7 +21,9 @@ const HOME = process.env.AGENT_ROOM_HOME || path.join(os.homedir(), '.agent-room
 // 从克隆的项目目录运行：数据放项目的 data/；通过 npx 运行（代码在 npm 缓存里）：数据放 ~/.agent-room/data
 const DATA = path.resolve(process.env.AIWS_DATA || (ROOT.includes(`${path.sep}_npx${path.sep}`) ? path.join(HOME, 'data') : path.join(ROOT, 'data')));
 const PUBLIC_FILE = path.join(DATA, 'public-url');
-const LOCAL = flag('--local');
+// 默认只在局域网里用；--public 才开 Cloudflare 公网隧道（旧行为）
+const PUBLIC = flag('--public');
+const LOCAL = !PUBLIC;
 let PORT = Number(opt('--port', process.env.AIWS_PORT || 4300));
 let stopping = false, ownServer = false, publicUrl = '', awake = false, opened = false;
 const kids = new Set();
@@ -60,7 +63,7 @@ async function ensureServer() {
   const start = () => {
     fs.mkdirSync(DATA, { recursive: true });
     const out = fs.openSync(path.join(DATA, 'server.log'), 'a');
-    const c = spawn(process.execPath, [path.join(ROOT, 'server.js')], { env: { ...process.env, AIWS_PORT: String(PORT), AIWS_DATA: DATA }, stdio: ['ignore', out, out] });
+    const c = spawn(process.execPath, [path.join(ROOT, 'server.js')], { env: { ...process.env, AIWS_PORT: String(PORT), AIWS_DATA: DATA, AIWS_PUBLIC: PUBLIC ? '1' : '' }, stdio: ['ignore', out, out] });
     kids.add(c);
     c.on('exit', code => { kids.delete(c); if (!stopping) { log(`⚠ 服务意外退出（code=${code}），3 秒后自动重启。日志：${path.join(DATA, 'server.log')}`); setTimeout(start, 3000); } });
   };
@@ -188,17 +191,28 @@ function openBrowser() {
   const [cmd, args] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
   try { spawn(cmd, args, { stdio: 'ignore', detached: true }).unref(); } catch { }
 }
+function lanInfo() {
+  const ips = [];
+  for (const list of Object.values(os.networkInterfaces())) for (const a of list || [])
+    if (a.family === 'IPv4' && !a.internal && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a.address)) ips.push(a.address);
+  let host = os.hostname().replace(/\.local$/i, '');
+  try { host = execFileSync('scutil', ['--get', 'LocalHostName'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || host; } catch { }
+  return { mdns: `http://${host}.local:${PORT}`, ips: ips.map(ip => `http://${ip}:${PORT}`) };
+}
 function banner(changed) {
-  const a = adminLink(publicUrl || `http://localhost:${PORT}`);
-  const line = '─'.repeat(60);
+  const lan = lanInfo();
+  const a = adminLink(`http://localhost:${PORT}`);
+  const line = '─'.repeat(64);
   log(`\n${line}`);
-  log(changed ? ' ⚠ 公网地址变了（网页里的邀请链接、接入命令已自动换成新地址）' : ' ✅ Agent_room 已启动');
-  log(`   本机地址：http://localhost:${PORT}`);
-  if (publicUrl) log(`   公网地址：${publicUrl}   ← 其他设备、其他 AI 用这个`);
-  else log(`   公网地址：${LOCAL ? '未开启（--local 模式，只能本机访问）' : '暂时没有（隧道连不上，只能本机访问）'}`);
-  if (a) log(`   管理员入口「${a.name}」：${opened || flag('--no-open') ? '' : '已在浏览器打开；'}换设备时用下面这个链接（等于管理员钥匙，别外传）\n   ${a.url}`);
-  else log('   第一次使用：在打开的网页里创建空间，再点「＋ 添加 AI 成员」');
-  if (changed) log('   已经接入的 AI 还记着旧地址：在成员列表里点它的「接入」，把新的一句话发给它。');
+  log(changed ? ' ⚠ 公网地址变了' : ' ✅ Agent_room 已启动（局域网模式）');
+  log(`   房间地址：${lan.mdns}${lan.ips.length ? `   备用 ${lan.ips.join('  ')}` : ''}`);
+  log('');
+  log('   拉 AI 进来：在网页上点「＋ 拉 AI 进来」复制那段话，发给同一个局域网里的任何 AI（没有令牌，可以随便转发）。');
+  log(`   它会自己读 ${lan.mdns} 的说明来敲门，你在网页顶部点「批准」就进来了。`);
+  log('');
+  if (PUBLIC) log(`   公网地址：${publicUrl || '连接中…'}`);
+  if (a) log(`   管理员页面：${opened || flag('--no-open') ? '' : '已在浏览器打开 · '}http://localhost:${PORT}`);
+  else log(`   第一次使用：在打开的网页里创建空间`);
   log(`   数据目录：${DATA}`);
   log(`   ${awake ? '已阻止电脑睡眠。' : ''}保持这个窗口开着；按 Ctrl+C 停止。`);
   log(line);

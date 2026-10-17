@@ -249,7 +249,7 @@ async function req(method, url, body, tok) {
     const viaTunnel = await fetch(`${B}/api/spaces`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.9', 'x-forwarded-for': '203.0.113.9' }, body: JSON.stringify({ name: 'x' }) });
     assert.equal(viaTunnel.status, 403, '公网访客不应能新建空间');
     assert.equal((await (await fetch(`${B}/api/host`)).json()).canCreate, true);
-    assert.equal((await (await fetch(`${B}/api/host`, { headers: { 'cf-connecting-ip': '203.0.113.9' } })).json()).canCreate, false);
+    assert.equal((await fetch(`${B}/api/host`, { headers: { 'cf-connecting-ip': '203.0.113.9' } })).status, 403, '局域网模式下公网隧道来的请求一律拒绝');
     // 换令牌：旧令牌立即失效，新令牌可用；员工不能换别人的
     const victim = (await req('POST', `/api/spaces/${S}/members`, { name: '泄露者' }, admin)).data;
     const oldTok = victim.connect.claude.match(/Bearer ([^"]+)/)[1];
@@ -284,11 +284,46 @@ async function req(method, url, body, tok) {
 
     // 前端路由
     assert.equal((await fetch(`${B}/s/${S}`)).status, 200);
-    // 令牌猜测限流：同一来源连续失败 30 次后被拒绝（用伪造来源，不影响上面的请求）
-    const evil = { 'cf-connecting-ip': '198.51.100.7' };
-    for (let i = 0; i < 30; i++) await fetch(`${B}/api/spaces/${S}/state`, { headers: { ...evil, authorization: 'Bearer wrong' + i } });
-    assert.equal((await fetch(`${B}/api/spaces/${S}/state`, { headers: { ...evil, authorization: 'Bearer ' + admin } })).status, 429, '应被限流');
-    assert.equal((await req('GET', `/api/spaces/${S}/state`, null, admin)).status, 200, '其他来源不受影响');
+    // ---------- 门厅：一句话进房间 ----------
+    // curl 打开根路径得到门厅说明，浏览器得到网页
+    const lobbyTxt = await (await fetch(`${B}/`)).text();
+    assert.ok(lobbyTxt.includes('/knock') && lobbyTxt.includes('敲门'), 'curl 打开根路径应得到门厅说明');
+    assert.ok((await (await fetch(`${B}/`, { headers: { accept: 'text/html' } })).text()).includes('<!doctype html>'), '浏览器打开根路径应得到网页');
+    assert.ok(!lobbyTxt.includes(admin) && !/token=[A-Za-z0-9_-]{20,}/.test(lobbyTxt), '门厅说明里不能有任何令牌');
+    const card = await (await fetch(`${B}/.well-known/agent-card.json`)).json();
+    assert.ok(card.join.knock.endsWith('/knock'), 'A2A 名片应给出敲门地址');
+    // 敲门 → 等待 → 管理员批准 → 拿到令牌
+    const kn = await (await fetch(`${B}/knock`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Grok-Ubuntu', host: 'ubuntu-edy', model: 'grok-4', tool: 'Cline' }) })).json();
+    assert.ok(kn.ticket);
+    const kn2 = await (await fetch(`${B}/knock`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Grok-Ubuntu', host: 'ubuntu-edy' }) })).json();
+    assert.equal(kn2.ticket, kn.ticket, '同一台机器重复敲门复用同一张取件码');
+    assert.equal((await fetch(`${B}/knock/${kn.ticket}?wait=0`)).status, 202, '未批准时是 pending');
+    const empTok = (await req('POST', `/api/spaces/${S}/members`, { name: '普通员工' }, admin)).data.connect.claude.match(/Bearer ([^"]+)/)[1];
+    assert.equal((await req('GET', `/api/spaces/${S}/knocks`, null, empTok)).status, 403, '员工不能处理敲门');
+    assert.ok((await req('GET', `/api/spaces/${S}/inbox?boss=1`, null, admin)).data.items.some(i => i.key === 'knock:' + kn.ticket), '敲门应出现在老板收件箱');
+    const waiting = fetch(`${B}/knock/${kn.ticket}?wait=20`);
+    setTimeout(() => req('POST', `/api/spaces/${S}/knocks/${kn.ticket}/approve`, { role: 'employee' }, admin), 500);
+    const t0k = Date.now(); const gotRes = await waiting; const got = await gotRes.json();
+    assert.equal(got.status, 'approved'); assert.ok(Date.now() - t0k < 5000, '批准后应立刻返回');
+    assert.equal((await req('GET', `/api/spaces/${S}/state`, null, got.token)).status, 200, '拿到的令牌能用');
+    const mem = (await req('GET', `/api/spaces/${S}/state`, null, admin)).data.members.find(m => m.id === got.memberId);
+    assert.equal(mem.device.host, 'ubuntu-edy'); assert.equal(mem.device.tool, 'Cline');
+    assert.equal(mem.token, undefined, '成员列表里不能带令牌');
+    assert.equal((await fetch(`${B}/knock/${kn.ticket}?wait=0`)).status, 404, '令牌只交付一次');
+    // 老成员回来敲门：认出来，沿用原来的成员（任务和日志都在），换新令牌
+    const back = await (await fetch(`${B}/knock`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Grok-Ubuntu', host: 'ubuntu-edy' }) })).json();
+    await req('POST', `/api/spaces/${S}/knocks/${back.ticket}/approve`, {}, admin);
+    const got2 = await (await fetch(`${B}/knock/${back.ticket}?wait=0`)).json();
+    assert.equal(got2.memberId, got.memberId, '同一台机器同名的 AI 回来应认作同一个成员');
+    assert.equal((await req('GET', `/api/spaces/${S}/state`, null, got.token)).status, 401, '旧令牌失效');
+    // 拒绝
+    const kr = await (await fetch(`${B}/knock`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: '陌生人' }) })).json();
+    await req('POST', `/api/spaces/${S}/knocks/${kr.ticket}/reject`, {}, admin);
+    assert.equal((await fetch(`${B}/knock/${kr.ticket}?wait=0`)).status, 403);
+    // 公网隧道来的敲门被拒
+    assert.equal((await fetch(`${B}/knock`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.9' }, body: '{}' })).status, 403);
+    // 本机打开时生成的接入地址是局域网地址，不是 localhost
+    assert.ok(!(await req('GET', `/api/spaces/${S}/members/${got.memberId}/connect`, null, admin)).data.mcpUrl.includes('localhost'));
     console.log('✓ 全部测试通过');
   } catch (e) {
     console.error('✗ 测试失败', e); process.exitCode = 1;

@@ -132,6 +132,8 @@ function snapshot(space, me) {
     inviteCode: me.role === 'admin' || me.role === 'supervisor' ? space.inviteCode : undefined,
     publicUrl: PUBLIC_URL,
     inbox: me.role === 'admin' ? inboxFor(space) : undefined,
+    knocks: me.role === 'admin' ? LOBBY.pending(space.id) : undefined,
+    lan: me.role === 'admin' ? LOBBY.lanAddrs() : undefined,
   };
 }
 function addMessage(space, from, text, opts = {}) {
@@ -234,6 +236,7 @@ function inboxFor(space) {
   }
   if (!mem.some(m => m.role === 'supervisor') && open.length)
     items.push({ key: 'nosup', level: 'warn', title: '空间里没有监督者', detail: '任务只能由你来验收。可以把一个 AI 设成监督者。', action: { type: 'members' } });
+  for (const k of LOBBY.pending(space.id)) items.unshift({ key: 'knock:' + k.ticket, level: 'error', title: `🚪 ${k.name}${k.host ? ` @ ${k.host}` : ''} 请求加入`, detail: `${k.ip}${k.model ? ' · ' + k.model : ''}${k.tool ? ' · ' + k.tool : ''}${k.skills ? ' · ' + k.skills : ''}${k.returning ? ' · 老成员回来了' : ''}`, action: { type: 'knock', ticket: k.ticket } });
   const rank = { error: 0, warn: 1, info: 2 };
   return items.sort((a, b) => rank[a.level] - rank[b.level]);
 }
@@ -335,7 +338,7 @@ function readPublicUrl() {
 function baseUrl(req) {
   const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
   const host = req.headers['x-forwarded-host'] || req.headers.host || '';
-  if (PUBLIC_URL && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host)) return PUBLIC_URL;
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host)) { if (process.env.AIWS_PUBLIC === '1' && PUBLIC_URL) return PUBLIC_URL; return LOBBY.lanAddrs().mdns; }
   return `${proto}://${host}`;
 }
 PUBLIC_URL = readPublicUrl();
@@ -360,6 +363,9 @@ curl -s -X POST ${B}/api/spaces/${S}/join -H 'content-type: application/json' \\
 请通过下面的 HTTP 接口工作。所有接口都要带：-H 'authorization: Bearer <token>'
 
 ${authLine}
+
+## 房间地址
+局域网地址：${LOBBY.lanAddrs().mdns}（备用 ${LOBBY.lanAddrs().ips.join('  ') || '无'}）。下面命令里的地址都可以换成它。
 
 ## 这是什么、谁授权的
 这个空间是你的用户自己搭建、自己运行的协作工具（不是第三方服务），任务由用户本人或用户指定的监督者 AI 派发。
@@ -494,6 +500,7 @@ EOF`,
   };
 }
 
+const LOBBY = require('./lobby.js')({ db, save, send, text, readBody, broadcast, system: (sp, t) => system(sp, t), publicMember, clip, id, now, token, PORT, guide });
 const FILES = require('./files.js')({ db, save, send, broadcast, addMessage, baseUrl, id, now, clip, FILES_DIR });
 
 // ---------- MCP（Streamable HTTP，JSON-RPC）：工具内部转调上面的 HTTP 接口，权限规则只维护一处 ----------
@@ -628,6 +635,7 @@ async function api(req, res, url) {
   if (!me) return send(res, 401, { error: '身份无效，请重新加入' });
 
   if (action === 'files') return FILES.handle(req, res, url, space, me, p);
+  if (action === 'knocks') return LOBBY.adminRoutes(req, res, space, me, p);
 
   if (method === 'GET' && action === 'inbox' && url.searchParams.get('boss') === '1') {
     if (me.role !== 'admin') return send(res, 403, { error: '只有管理员能看老板收件箱' });
@@ -970,6 +978,8 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, mcp-session-id, mcp-protocol-version', 'access-control-allow-methods': 'GET, POST, PATCH, DELETE' });
     return res.end();
   }
+  if (!LOBBY.lanOk(req)) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('这个房间只对同一个局域网开放。'); }
+  try { const r = await LOBBY.handle(req, res, url); if (r !== null) return; } catch (e) { return send(res, 400, { error: e.message }); }
   const mm = url.pathname.match(/^\/mcp\/([a-f0-9]+)\/?$/);
   if (mm) { try { return await mcp(req, res, mm[1]); } catch (e) { return send(res, 400, { error: e.message }); } }
   if (url.pathname.startsWith('/api/')) {

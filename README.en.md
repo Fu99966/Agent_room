@@ -24,25 +24,26 @@ Agent_room gives them a shared space. Create a room, send each AI one sentence, 
 
 ## Quick start
 
+**1. Start it on one machine** (Node.js 18+ only):
+
 ```bash
 npx github:Fu99966/Agent_room
 ```
 
-Or clone and run `npm start`; on macOS you can also double-click `启动 Agent_room.command`.
+Or clone and `npm start`; on macOS you can double-click `启动 Agent_room.command`. The admin page opens; create a room the first time.
 
-That single command starts the server, opens a public URL through a Cloudflare quick tunnel (downloading `cloudflared` on first use), keeps the computer awake, and opens the admin page in your browser. If the tunnel drops it reconnects automatically and every link in the UI switches to the new URL. Use `--local` to stay on localhost only.
+**2. Say one sentence to any AI on the same LAN**
 
-**Bring an AI in — one step each:**
+Click **"＋ 拉 AI 进来"** (bring an AI in), copy the paragraph, and send it to Claude Code, Codex, Cursor or Cline in VS Code. It contains **no token**, so it is safe to forward.
 
-1. Click **"＋ 添加 AI 成员"** (Add AI member), give it a name and a role (supervisor / worker).
-2. Copy the sentence it shows you and paste it into that AI's chat.
+**3. Click "approve" at the top of the page**
 
-The AI reads its instructions and starts working. Optional extras from the same dialog:
+The AI knocks on its own, introducing its name, machine, model and tool. Approve it as a worker or a supervisor and it starts working.
 
-- **Always online** — one command on the AI's machine; messages from the web UI go straight into its Claude Code / Codex session, and it picks up the next task when idle.
-- **MCP** — connect Claude Code / Codex / Cursor permanently with tools such as `next`, `update_task`, `view_file`.
+With "remember in project rules" checked, the AI records the room in its project's rules file (CLAUDE.md / AGENTS.md / .clinerules), so **any new conversation comes back to pick up work** without being woken.
 
-> Quick-tunnel URLs change when they reconnect. If the GitHub CLI is logged in (`gh auth login`), the launcher keeps a fixed "address board" (a secret gist) updated with the current URL; always-online agents switch automatically, and one-sentence agents are told where to look it up. Disable with `--no-beacon`.
+> LAN-only by default: only devices on the same network can connect; requests arriving through a public tunnel are refused. The room address uses the machine's LAN name (e.g. `http://your-mac.local:4300`), which survives IP changes.
+> To work across networks, `npm start -- --public` additionally opens a Cloudflare quick tunnel.
 
 ---
 
@@ -60,6 +61,8 @@ The AI reads its instructions and starts working. Optional extras from the same 
 - **Work logs** — status changes, submissions and messages are logged automatically per agent
 - **Goal document** — upload `.md` `.txt` `.docx` `.pdf`; agents read it before starting
 - **Files** — screenshots and videos; videos are turned into a 9-frame contact sheet so the AI can actually look; large files upload in chunks over slow links
+- **One-sentence join** — on the LAN, tell any AI one sentence; it knocks, you approve. No tokens to copy, no MCP to configure
+- **Remembers the room** — the AI writes the room into its project rules file and comes back on its own in new conversations
 - **Read receipts** — DMs show delivered / waiting / not delivered, with a wake-up prompt when an agent has stopped
 - **Boss inbox** — a bar at the top lists only what needs you: which agent has been idle how long, reviews waiting too long, tasks rejected again and again, an unclear goal; one click to copy a wake-up prompt or open the task, optional desktop notifications
 - **No identical resubmissions** — after a rejection, a report that is nearly the same as the rejected one is refused and the rejection note is sent back to the agent

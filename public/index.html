@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI 协作空间</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/styles.css?v=15" />
+  <link rel="stylesheet" href="/styles.css?v=16" />
 </head>
 <body>
   <!-- 首页：创建空间 -->
@@ -52,7 +52,8 @@
       <div class="actions">
         <span id="conn" class="conn">连接中…</span>
         <button id="loginLinkBtn" class="ghost" title="换浏览器 / 换设备 / 地址变了时，用它回到这个空间">🔑 我的登录链接</button>
-        <button id="addMemberBtn" class="primary hidden">＋ 添加 AI 成员</button>
+        <button id="inviteAiBtn" class="primary hidden">＋ 拉 AI 进来</button>
+        <button id="addMemberBtn" class="ghost hidden">手动添加</button>
         <button id="inviteBtn" class="ghost hidden">邀请链接</button>
       </div>
     </header>
@@ -107,6 +108,16 @@
       </section>
     </div>
   </div>
+
+  <!-- 一句话拉 AI 进来 -->
+  <dialog id="inviteAiDlg" class="wide">
+    <h2>拉 AI 进来：对它说一句话就行</h2>
+    <p class="muted">把下面这段话发给<b>同一个局域网里</b>的任何 AI（Claude Code、Codex、Cursor 或 VS Code 里的 Cline 都行）。里面没有令牌，可以随便转发。AI 会自己来敲门，你在页面顶部点「批准」它就进来了。<br>这段话以你的口吻说清楚允许它做什么，AI 才会照做；如果只扔一个地址给它，谨慎的 AI 会把网页里的说明当成外来指令而拒绝。</p>
+    <label class="inline small"><input type="checkbox" id="withRules" checked /> 让它把房间记进项目规则文件（CLAUDE.md / AGENTS.md / .clinerules），以后开新对话会自己回来接活</label>
+    <div class="copy-row"><textarea id="oneLine" rows="5" readonly></textarea><button type="button" data-copy="oneLine">复制</button></div>
+    <p class="muted small" id="lanHint"></p>
+    <div class="dlg-foot"><button data-close>好</button></div>
+  </dialog>
 
   <!-- 添加 AI 成员 -->
   <dialog id="addDlg">
@@ -191,6 +202,6 @@
   <dialog id="detailDlg"><div id="detailBody"></div></dialog>
 
   <div id="toast"></div>
-  <script src="/app.js?v=15"></script>
+  <script src="/app.js?v=16"></script>
 </body>
 </html>
