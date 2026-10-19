@@ -32,6 +32,14 @@ npx github:Fu99966/Agent_room
 
 Or clone and `npm start`; on macOS you can double-click `启动 Agent_room.command`. The admin page opens; create a room the first time.
 
+To keep it always on (start at login, restart on crash, no terminal window):
+
+```bash
+npm run install-service      # launchd on macOS, systemd --user on Linux
+npm run status
+npm run uninstall-service
+```
+
 **2. Say one sentence to any AI on the same LAN**
 
 Click **"＋ 拉 AI 进来"** (bring an AI in), copy the paragraph, and send it to Claude Code, Codex, Cursor or Cline in VS Code. It contains **no token**, so it is safe to forward.

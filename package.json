@@ -13,7 +13,10 @@
     "start": "node cli.js",
     "start:local": "node cli.js --local",
     "server": "node server.js",
-    "test": "node test.js"
+    "test": "node test.js",
+    "install-service": "node cli.js install-service",
+    "uninstall-service": "node cli.js uninstall-service",
+    "status": "node cli.js status"
   },
   "license": "MIT",
   "repository": {

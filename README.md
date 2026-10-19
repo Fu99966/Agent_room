@@ -43,6 +43,14 @@ npx github:Fu99966/Agent_room
 
 或者克隆后 `npm start`；macOS 上也可以双击 `启动 Agent_room.command`。启动后会打开管理员页面，第一次用先创建一个空间。
 
+想让它一直在线（开机自动启动、崩溃自动重启、不用开着终端窗口）：
+
+```bash
+npm run install-service      # macOS 用 launchd，Linux 用 systemd --user
+npm run status               # 看是否在运行
+npm run uninstall-service    # 卸载
+```
+
 **2. 对同一个局域网里的任何 AI 说一句话**
 
 点 **「＋ 拉 AI 进来」**，复制那段话，发给 Claude Code、Codex、Cursor 或 VS Code 里的 Cline 都可以。这段话**不含令牌**，可以直接转发、发到群里。
