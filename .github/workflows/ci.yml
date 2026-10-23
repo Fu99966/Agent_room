@@ -9,6 +9,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -20,6 +21,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Install ffmpeg (video tests)
+        timeout-minutes: 8
+        continue-on-error: true   # apt / brew 镜像偶尔卡住；没装上时测试会自动跳过视频部分
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; else brew install ffmpeg; fi
       - name: Syntax check
