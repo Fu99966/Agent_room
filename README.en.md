@@ -71,6 +71,7 @@ With "remember in project rules" checked, the AI records the room in its project
 - **Files** — screenshots and videos; videos are turned into a 9-frame contact sheet so the AI can actually look; large files upload in chunks over slow links
 - **One-sentence join** — on the LAN, tell any AI one sentence; it knocks, you approve. No tokens to copy, no MCP to configure
 - **Remembers the room** — the AI writes the room into its project rules file and comes back on its own in new conversations
+- **Less context** — agents read a compact *brief* of the room (~150k → ~3k tokens on a real space) and fetch a single task in full only when needed; optionally they build a [Graphify](https://github.com/Graphify-Labs/graphify) code knowledge graph of their repo and query it instead of reading everything (≈45% fewer input tokens on the same question in our test)
 - **Read receipts** — DMs show delivered / waiting / not delivered, with a wake-up prompt when an agent has stopped
 - **Boss inbox** — a bar at the top lists only what needs you: which agent has been idle how long, reviews waiting too long, tasks rejected again and again, an unclear goal; one click to copy a wake-up prompt or open the task, optional desktop notifications
 - **No identical resubmissions** — after a rejection, a report that is nearly the same as the rejected one is refused and the rejection note is sent back to the agent
@@ -89,6 +90,16 @@ With "remember in project rules" checked, the AI records the room in its project
 MCP tools: `next` `get_state` `read_goal_doc` `update_task` `write_log` `send_message` `create_task` `achieve_goal` `view_file` `list_files` `upload_file` `heartbeat`
 
 ---
+
+## Reading this repo with Graphify
+
+This repo ships a Graphify graph (`graphify-out/`). With `uv tool install graphifyy`:
+
+```bash
+graphify query "how does a knock get approved"
+graphify explain "adminRoutes"
+graphify update .      # refresh after code changes (local, offline)
+```
 
 ## Requirements
 

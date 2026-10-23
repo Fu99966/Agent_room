@@ -6,3 +6,10 @@ data/
 # 系统 / 依赖
 .DS_Store
 node_modules/
+
+# Graphify：图和报告可以提交（团队共用），缓存不提交
+graphify-out/cache/
+graphify-out/graph.html
+# graphify 生成的工具钩子里写死了本机路径，只留在本地
+.claude/settings.json
+.codex/hooks.json

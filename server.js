@@ -117,6 +117,42 @@ function publicMember(m) {
   const { token: _t, ...rest } = m;
   return { ...rest, online: now() - (m.lastSeen || 0) < 90000, active: now() - Math.max(m.lastNextAt || 0, m.lastSeen || 0, m.bridge?.at || 0) < 120000 };
 }
+// ---------- 给 AI 的「简报」：只给干活需要的上下文，不把整个空间灌进去 ----------
+// 完整 state 在一个真实空间里有 65 万字节（约 15 万 token），大部分是历史消息、日志和实时会话流。
+// AI 真正要的是：目标、我是谁、我手上的任务（描述 + 最新的退回意见）、待我验收的、最近几条和我有关的消息。
+function brief(space, me) {
+  const short = (x, n) => { const t = String(x || ''); return t.length > n ? t.slice(0, n) + `…（共 ${t.length} 字，GET /tasks/<ID> 看全文）` : t; };
+  const name = id => space.members[id]?.name || '';
+  const lead = isLead(me);
+  const taskView = t => {
+    const lastReview = [...space.messages].reverse().find(m => m.taskId === t.id && (m.kind === 'reject' || m.kind === 'approve'));
+    return {
+      id: t.id, title: t.title, status: t.status, progress: t.progress, assignee: name(t.assignee),
+      description: short(t.description, 1500),
+      ...(t.status === 'rejected' || (lastReview && lastReview.kind === 'reject' && t.status !== 'approved') ? { lastRejectNote: short(lastReview?.text || t.rejectNote, 1500) } : {}),
+      ...(t.status === 'submitted' ? { result: short(t.result, 1500), submittedAt: t.submittedAt } : {}),
+      files: (space.files || []).filter(f => f.taskId === t.id).slice(-6).map(f => ({ id: f.id, name: f.name, type: f.type })),
+      notes: t.notes.slice(-3).map(n => `${n.byName}：${short(n.text, 300)}`),
+    };
+  };
+  const mine = space.tasks.filter(t => t.assignee === me.id && t.status !== 'approved');
+  const review = lead ? space.tasks.filter(t => t.status === 'submitted') : [];
+  const others = space.tasks.filter(t => !mine.includes(t) && !review.includes(t));
+  const mineMsgs = space.messages.filter(m => m.kind !== 'system' && m.from !== me.id && (m.to === me.id || (!m.to && (space.members[m.from]?.kind === 'human' || String(m.text || '').includes('@' + me.name))))).slice(-8);
+  const g = space.goal || {};
+  return {
+    space: { id: space.id, name: space.name },
+    goal: { text: short(g.text, 600), status: g.status, doc: g.doc ? `有目标文档「${g.doc.name}」：GET /goal/doc` : undefined },
+    me: { id: me.id, name: me.name, role: me.role },
+    members: Object.values(space.members).map(m => `${m.name}（${({ admin: '管理员', supervisor: '监督者', employee: '员工' })[m.role]}${m.device?.host ? ' @ ' + m.device.host : ''}）`),
+    myTasks: mine.map(taskView),
+    reviewQueue: review.map(taskView),
+    otherTasks: others.map(t => `${t.id} ${t.status} ${t.title.slice(0, 40)}${t.assignee ? ' → ' + name(t.assignee) : ''}`),
+    messagesForMe: mineMsgs.map(m => ({ from: m.fromName, at: m.at, dm: !!m.to, text: short(m.text, 600) })),
+    more: '需要更多：GET /tasks/<ID> 看任务全文和全部记录；GET /logs?member=<ID> 看日志；GET /state 是完整空间（很大，尽量别用）。',
+  };
+}
+
 function snapshot(space, me) {
   const visibleMsgs = space.messages.filter(x => !x.to || x.to === me.id || x.from === me.id).slice(-300);
   return {
@@ -198,7 +234,7 @@ const goalForAI = (space, req) => {
 };
 
 // ---------- 下一步：告诉每个 AI 现在该做什么 ----------
-const LOOP_TAIL = '做完后：写工作日志 → 更新任务状态 → 再调用 /next 取下一项（用户已授权持续工作；涉及删除、强推、发布、凭据等高风险操作时先停下来请管理员确认）。';
+const LOOP_TAIL = '需要更多上下文时用 GET /brief（简报）或 GET /tasks/<ID>（单个任务全文），不要拉 /state。做完后：写工作日志 → 更新任务状态 → 再调用 /next 取下一项（用户已授权持续工作；涉及删除、强推、发布、凭据等高风险操作时先停下来请管理员确认）。';
 // 退回后重复提交检测：和被退回的那份报告几乎一样，就直接打回，并把退回意见原样返回（任务 M 连续 6 次交同一版本的教训）
 function similarity(a, b) {
   const grams = x => { const t = String(x || '').replace(/\s+/g, ''); const g = new Set(); for (let i = 0; i < t.length - 2; i++) g.add(t.slice(i, i + 3)); return g; };
@@ -244,7 +280,7 @@ function inboxFor(space) {
 function nextFor(space, me, since, req) {
   const g = goalForAI(space, req);
   const msgs = space.messages.filter(x => x.at > since && x.from !== me.id && (!x.to || x.to === me.id) && x.kind !== 'system');
-  const base = { goal: g, messages: msgs, now: now() };
+  const base = { goal: g, messages: msgs.slice(-10).map(m => ({ ...m, text: String(m.text || '').length > 1500 ? String(m.text).slice(0, 1500) + '…（GET /brief 或 /tasks/<ID> 看全文）' : m.text })), now: now() };
   const docHint = g.docUrl ? `（完整目标文档「${g.docName}」：GET ${g.docUrl}，带 token）` : '';
   if (g.status === 'achieved') return { ...base, action: 'stop', stop: true, instruction: `空间目标已由 ${g.achievedByName || '监督者'} 确认达成，可以停止工作了。` };
   const open = t => !['approved'].includes(t.status);
@@ -401,8 +437,10 @@ curl -s '${B}/api/spaces/${S}/next?wait=50' -H 'authorization: Bearer <token>'
 ## 常用接口
 1. 收件箱（派给你的任务 + 发给你的消息，建议每 30~60 秒轮询一次；since 填上次返回的 now）：
    curl -s '${B}/api/spaces/${S}/inbox?since=0' -H 'authorization: Bearer <token>'
-2. 查看空间全貌（成员、全部任务、消息）：
-   curl -s ${B}/api/spaces/${S}/state -H 'authorization: Bearer <token>'
+2. 查看空间简报（目标、我的任务和最新退回意见、待验收、和我有关的消息；推荐用这个，比完整状态小很多）：
+   curl -s ${B}/api/spaces/${S}/brief -H 'authorization: Bearer <token>'
+   单个任务全文：curl -s ${B}/api/spaces/${S}/tasks/<任务ID> -H 'authorization: Bearer <token>'
+   （/state 是完整空间，数据很大，非必要别用）
 3. 发消息（to 可选，填成员ID即私信）：
    curl -s -X POST ${B}/api/spaces/${S}/messages -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{"text":"你好"}'
 4. 更新任务（员工：status 可为 doing / submitted / blocked；progress 0~100；result 填完整报告，支持 Markdown 表格）：
@@ -429,6 +467,12 @@ curl -s '${B}/api/spaces/${S}/next?wait=50' -H 'authorization: Bearer <token>'
 - 查看：图片预览 GET /files/<文件ID>/preview；视频缩略图墙 GET /files/<文件ID>/sheet（9 帧拼图），单帧 GET /files/<文件ID>/frame/0..8；原文件 GET /files/<文件ID>
   不能直接看图的话，先下载到本地再用你读图片的能力打开，例如：curl -s .../preview -H 'authorization: Bearer <token>' -o /tmp/p.jpg
 - 用 MCP 接入的：upload_file 给出上传命令，view_file 直接返回图片。
+
+## 省上下文
+- 看团队现状用 GET /brief（简报），看单个任务用 GET /tasks/<ID>；/state 是完整空间，数据很大，别默认拉它。
+- 如果主人同意，可以给你工作的代码仓库建一张 Graphify 代码知识图（开源，代码部分本机离线解析，不需要 API Key）：
+  uv tool install graphifyy && graphify update . && graphify <claude|codex|cursor> install
+  之后查代码先用 graphify query "<问题>"，而不是通读整个仓库；改完代码跑 graphify update .
 
 ## 目标文档
 - 空间目标可能附带一份完整文档（README / 需求文档）：GET /api/spaces/${S}/goal/doc（带 token）。开始工作前先读一遍。
@@ -506,7 +550,8 @@ const FILES = require('./files.js')({ db, save, send, broadcast, addMessage, bas
 // ---------- MCP（Streamable HTTP，JSON-RPC）：工具内部转调上面的 HTTP 接口，权限规则只维护一处 ----------
 const MCP_TOOLS = [
   { name: 'next', description: '获取你现在该做的事（核心工作循环）。没事可做时最多等待 50 秒。按 instruction 做完后再次调用 next 取下一项，直到 stop=true。高风险操作（删除大量文件、强推、发布、凭据）先请管理员确认。', inputSchema: { type: 'object', properties: { wait: { type: 'number', description: '没事可做时最多等待秒数，默认 50' } } }, call: (a, mine) => ['GET', `/next?wait=${a.wait ?? 50}&since=${mine.since || 0}`] },
-  { name: 'get_state', description: '查看空间全貌：目标、成员、全部任务、最近消息。', inputSchema: { type: 'object', properties: {} }, call: () => ['GET', '/state'] },
+  { name: 'get_state', description: '查看空间简报：目标、成员、我手上的任务（含最新退回意见）、待我验收的、和我有关的消息。比完整状态小得多。', inputSchema: { type: 'object', properties: {} }, call: () => ['GET', '/brief'] },
+  { name: 'get_task', description: '查看一个任务的全文：完整描述、报告、全部记录、提交和验收历史、附件。', inputSchema: { type: 'object', required: ['task_id'], properties: { task_id: { type: 'string' } } }, call: a => ['GET', `/tasks/${encodeURIComponent(a.task_id)}`] },
   { name: 'read_goal_doc', description: '读取空间目标文档（README / 需求文档）全文。开始工作前先读。', inputSchema: { type: 'object', properties: {} }, call: () => ['GET', '/goal/doc'] },
   { name: 'update_task', description: '更新任务。员工：status=doing/submitted/blocked，progress 0-100，提交时 result 必须是完整报告（支持 Markdown 表格）。监督者：status=approved/rejected 并写 note；也可用 assignee 改派。', inputSchema: { type: 'object', required: ['task_id'], properties: { task_id: { type: 'string' }, status: { type: 'string', enum: ['todo', 'doing', 'submitted', 'blocked', 'approved', 'rejected'] }, progress: { type: 'number' }, result: { type: 'string' }, note: { type: 'string' }, assignee: { type: 'string' } } }, call: a => { const { task_id, ...b } = a; return ['PATCH', `/tasks/${encodeURIComponent(task_id)}`, b]; } },
   { name: 'write_log', description: '写工作日志：每做完一步都要写（做了什么、遇到什么问题、下一步）。', inputSchema: { type: 'object', required: ['done'], properties: { done: { type: 'string' }, problem: { type: 'string' }, next: { type: 'string' }, task_id: { type: 'string' } } }, call: a => ['POST', '/logs', { done: a.done, problem: a.problem, next: a.next, taskId: a.task_id }] },
@@ -641,6 +686,7 @@ async function api(req, res, url) {
     if (me.role !== 'admin') return send(res, 403, { error: '只有管理员能看老板收件箱' });
     return send(res, 200, { items: inboxFor(space) });
   }
+  if (method === 'GET' && action === 'brief') return send(res, 200, brief(space, me));
   if (method === 'GET' && action === 'state') return send(res, 200, snapshot(space, me));
 
   if (method === 'GET' && action === 'events') {
@@ -812,6 +858,12 @@ async function api(req, res, url) {
     return send(res, 201, task);
   }
 
+  if (method === 'GET' && action === 'tasks' && p[4]) {
+    const t = space.tasks.find(x => x.id === p[4]);
+    if (!t) return send(res, 404, { error: '任务不存在' });
+    const reviews = space.messages.filter(m => m.taskId === t.id && ['submit', 'reject', 'approve'].includes(m.kind)).slice(-10).map(m => ({ kind: m.kind, from: m.fromName, at: m.at, text: m.text }));
+    return send(res, 200, { ...t, reviews, files: (space.files || []).filter(f => f.taskId === t.id).map(FILES.meta) });
+  }
   if (method === 'PATCH' && action === 'tasks' && p[4]) {
     const task = space.tasks.find(t => t.id === p[4]);
     if (!task) return send(res, 404, { error: '任务不存在' });

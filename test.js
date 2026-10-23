@@ -15,6 +15,7 @@ async function req(method, url, body, tok) {
   return { status: r.status, data };
 }
 
+let empTok2;
 (async () => {
   const srv = spawn('node', ['server.js'], { cwd: __dirname, env: { ...process.env, AIWS_PORT: PORT, AIWS_DATA: DATA } });
   let errOut = ''; srv.stderr.on('data', d => errOut += d);
@@ -284,6 +285,21 @@ async function req(method, url, body, tok) {
 
     // 前端路由
     assert.equal((await fetch(`${B}/s/${S}`)).status, 200);
+    // 简报：比完整状态小，带我的任务和最新退回意见；单个任务全文接口
+    const brT = (await req('POST', `/api/spaces/${S}/tasks`, { title: '简报测试', description: 'x'.repeat(5000), assignee: empTok2 = (await req('POST', `/api/spaces/${S}/members`, { name: '简报员工' }, admin)).data.member.id }, a.token)).data;
+    const bTok = (await req('GET', `/api/spaces/${S}/members/${empTok2}/connect`, null, admin)).data.claude.match(/Bearer ([^"]+)/)[1];
+    await req('PATCH', `/api/spaces/${S}/tasks/${brT.id}`, { status: 'submitted', result: '第一版' }, bTok);
+    await req('PATCH', `/api/spaces/${S}/tasks/${brT.id}`, { status: 'rejected', note: '把 grasp 换成 23.0 s' }, a.token);
+    const brief1 = (await req('GET', `/api/spaces/${S}/brief`, null, bTok)).data;
+    const brMine = brief1.myTasks.find(x => x.id === brT.id);
+    assert.ok(brMine && brMine.lastRejectNote.includes('23.0 s'), '简报里应带最新退回意见');
+    assert.ok(brMine.description.length < 1700, '长描述在简报里要截断');
+    const fullState = JSON.stringify((await req('GET', `/api/spaces/${S}/state`, null, bTok)).data).length;
+    assert.ok(JSON.stringify(brief1).length < fullState, '简报应比完整状态小');
+    const brOne = (await req('GET', `/api/spaces/${S}/tasks/${brT.id}`, null, bTok)).data;
+    assert.equal(brOne.description.length, 5000, '单个任务接口给全文'); assert.ok(brOne.reviews.some(r => r.kind === 'reject'));
+    assert.ok((await req('GET', `/api/spaces/${S}/guide?token=${bTok}`)).data.includes('/brief'), '接入说明应推荐 /brief');
+
     // ---------- 门厅：一句话进房间 ----------
     // curl 打开根路径得到门厅说明，浏览器得到网页
     const lobbyTxt = await (await fetch(`${B}/`)).text();

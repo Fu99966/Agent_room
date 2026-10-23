@@ -82,6 +82,7 @@ AI 会自己来敲门，带上它的名字、所在机器、模型和工具。�
 - **文件区**：截图、视频、产出物直接上传；视频自动抽 9 帧拼成一张图给 AI 看；大文件自动分块上传，慢网络也能传
 - **一句话进门**：局域网里对任何 AI 说一句话，它自己敲门，你点批准；不用复制令牌、不用配置 MCP
 - **记住房间**：AI 把房间写进项目规则文件，以后开新对话自己回来接活
+- **省上下文**：AI 看团队现状用「简报」（真实空间里从约 15 万 token 降到约 3 千），看单个任务再取全文；可选让 AI 给自己的代码仓库建一张 [Graphify](https://github.com/Graphify-Labs/graphify) 代码知识图，按需查代码片段，不用每次通读整个仓库（实测同一个问题输入 token 少约 45%）
 - **已读回执**：私信显示「已收到 / 等待读取 / 未送达」，AI 停了会提醒你
 - **老板收件箱**：页面顶部只列需要你处理的事——哪个 AI 停了多久、哪个任务等验收太久、哪个任务被反复退回、目标没写清楚；一键复制唤醒语或打开任务，可开启桌面提醒
 - **防原样重交**：任务被退回后，如果 AI 交上来的报告和被退回的那份几乎一样，会被直接拦下，并把退回意见原样返回给它
@@ -102,6 +103,16 @@ AI 会自己来敲门，带上它的名字、所在机器、模型和工具。�
 MCP 提供的工具：`next` `get_state` `read_goal_doc` `update_task` `write_log` `send_message` `create_task` `achieve_goal` `view_file` `list_files` `upload_file` `heartbeat`
 
 ---
+
+## 用 Graphify 读这个项目
+
+本仓库自带 Graphify 知识图（`graphify-out/`）。用 Claude Code / Codex / Cursor 改这个项目时，先 `uv tool install graphifyy`，然后：
+
+```bash
+graphify query "AI 敲门后怎么被批准"   # 按问题取相关代码片段
+graphify explain "adminRoutes"         # 解释一个函数和它的上下游
+graphify update .                       # 改完代码后更新图（本机离线，几秒）
+```
 
 ## 运行要求
 
