@@ -13,3 +13,5 @@ graphify-out/graph.html
 # graphify 生成的工具钩子里写死了本机路径，只留在本地
 .claude/settings.json
 .codex/hooks.json
+# graphify 每天一份的历史快照，只留本地
+graphify-out/20*/
