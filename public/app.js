@@ -628,10 +628,17 @@ $('#msgForm').onsubmit = async e => {
 };
 
 // ---------- 一句话拉 AI 进来（局域网） ----------
+// 发给 AI 的一句话：不含令牌、不含命令。以用户的口吻授权，AI 才会照做（只丢个地址，谨慎的 AI 会当成外来指令拒绝）
+function aiSentence(rules, graph) {
+  const lan = S.lan || { mdns: location.origin, ips: [] };
+  const pub = /^https:\/\//.test(S.publicUrl || '') ? S.publicUrl : '';
+  const alt = [lan.ips[0], pub].filter(Boolean).join(' 或 ');
+  return `请加入我的 AI 团队看板 Agent_room：用 curl 读 ${lan.mdns}${alt ? `（打不开换 ${alt}）` : ''}，按说明敲门，我批准后接着处理派给你的任务，做完一项取下一项。${rules ? '可以把房间记进本项目规则文件。' : ''}${graph ? '可以按说明装 Graphify 建代码图。' : ''}删大量文件、强推、上线、动密钥前先问我。`;
+}
 $('#inviteAiBtn').onclick = () => {
   const lan = S.lan || { mdns: location.origin, ips: [] };
   const pub = /^https:\/\//.test(S.publicUrl || '') ? S.publicUrl : '';
-  const sentence = () => `请加入我自己搭的 AI 团队看板 Agent_room：用 curl 读 ${lan.mdns} 的接口说明（打不开就用 ${[lan.ips[0], pub].filter(Boolean).join('，再不行用 ') || lan.mdns}），按说明敲门，介绍里写上你的名字、hostname、模型和所在工具。我在网页上批准后，保存令牌，然后处理派给你的任务，做完一项接着取下一项。${$('#withRules').checked ? '另外，我同意你按说明里的约定，把这个房间记进本项目的规则文件，以后开新对话先去看有没有派给你的任务。' : ''}${$('#withGraph').checked ? '我也同意你按说明里「省上下文」一节，装 Graphify 给你工作的代码仓库建一张代码知识图（只解析代码、本机离线），以后查代码先用 graphify query。' : ''}删除大量文件、强制推送、发布上线、动用密钥前先问我。`;
+  const sentence = () => aiSentence($('#withRules').checked, $('#withGraph').checked);
   $('#oneLine').value = sentence();
   $('#withRules').onchange = $('#withGraph').onchange = () => { $('#oneLine').value = sentence(); };
   $('#lanHint').innerHTML = `首选地址 <code class="ic">${esc(lan.mdns)}</code> 是这台电脑的局域网名字，IP 变了也能用。备用：${lan.ips.map(x => `<code class="ic">${esc(x)}</code>`).join(' ') || '无'}。${pub ? `<br>公网地址 <code class="ic">${esc(pub)}</code>：不在同一个网络里的 AI 也能用它敲门，仍然要你批准才能进来。` : '<br>不在同一个网络里的 AI 打不开，这是故意的。想让外网的 AI 也能进来：在终端运行 <code class="ic">node cli.js domain room.你的域名.com</code>。'}`;
@@ -700,7 +707,9 @@ function openInvite() {
   const link = `${ORIGIN()}/s/${sid}?invite=${S.inviteCode}`;
   const guide = `${ORIGIN()}/api/spaces/${sid}/guide?invite=${S.inviteCode}`;
   $('#humanLink').value = link;
-  $('#aiPrompt').value = `你被邀请加入一个多 AI 协作空间「${S.space.name}」。\n请先读取这个地址获取接入说明，然后按说明加入并开始工作：\n${guide}\n\n加入后请定期轮询收件箱，执行派给你的任务，完成后提交验收。\n重要：每做完一步，都要调用日志接口记录「做了什么、遇到什么问题、下一步」，不要攒到最后。\n最重要：不要做完一项就停。按说明里的「工作循环」反复调用 /next，直到返回 stop=true。`;
+  // 管理员：AI 走敲门，一句话即可；监督者批不了敲门，给它一句带邀请地址的话
+  $('#aiPrompt').value = S.me.role === 'admin' ? aiSentence(true, false)
+    : `请加入我的 AI 团队看板 Agent_room：用 curl 读 ${guide} ，按说明加入，然后处理派给你的任务，做完一项取下一项。删大量文件、强推、上线、动密钥前先问我。`;
   $('#resetInvite').classList.toggle('hidden', S.me.role !== 'admin');
   if (/localhost|127\.0\.0\.1/.test(new URL(ORIGIN()).hostname)) toast('提示：现在没有公网地址，这些链接只能在本机用。用 npm start 启动会自动生成公网地址');
   $('#inviteDlg').showModal();

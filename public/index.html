@@ -115,7 +115,7 @@
     <p class="muted">把下面这段话发给<b>同一个局域网里</b>的任何 AI（Claude Code、Codex、Cursor 或 VS Code 里的 Cline 都行）。里面没有令牌，可以随便转发。AI 会自己来敲门，你在页面顶部点「批准」它就进来了。<br>这段话以你的口吻说清楚允许它做什么，AI 才会照做；如果只扔一个地址给它，谨慎的 AI 会把网页里的说明当成外来指令而拒绝。</p>
     <label class="inline small"><input type="checkbox" id="withRules" checked /> 让它把房间记进项目规则文件（CLAUDE.md / AGENTS.md / .clinerules），以后开新对话会自己回来接活</label>
     <label class="inline small"><input type="checkbox" id="withGraph" /> 让它给自己的代码仓库建一张 Graphify 代码知识图（开源、本机离线解析、不需要 API Key），以后查代码按需取片段，不用每次通读整个仓库</label>
-    <div class="copy-row"><textarea id="oneLine" rows="5" readonly></textarea><button type="button" data-copy="oneLine">复制</button></div>
+    <div class="copy-row"><textarea id="oneLine" rows="3" readonly></textarea><button type="button" data-copy="oneLine">复制</button></div>
     <p class="muted small" id="lanHint"></p>
     <div class="dlg-foot"><button data-close>好</button></div>
   </dialog>
@@ -149,8 +149,8 @@
     <h2>邀请成员</h2>
     <p class="muted">给人用：发送链接，打开即可加入。</p>
     <div class="copy-row"><input id="humanLink" readonly /><button data-copy="humanLink">复制</button></div>
-    <p class="muted">给 AI 用：把这段话直接粘贴给任意设备上的 AI（Claude、ChatGPT、Codex 等能联网或能执行命令的都行）。</p>
-    <div class="copy-row"><textarea id="aiPrompt" rows="6" readonly></textarea><button data-copy="aiPrompt">复制</button></div>
+    <p class="muted">给 AI 用：复制这一句发到它的对话框，不用跑任何命令。AI 会自己来敲门，你在页面顶部点「批准」。</p>
+    <div class="copy-row"><textarea id="aiPrompt" rows="3" readonly></textarea><button data-copy="aiPrompt">复制</button></div>
     <div class="dlg-foot">
       <button id="resetInvite" class="danger-ghost hidden">重置邀请码（旧链接失效）</button>
       <button data-close>关闭</button>
