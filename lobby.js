@@ -16,14 +16,19 @@ const MAX_PENDING = 20;                 // 同时最多 20 个待批准的敲门
 const PRIVATE = [/^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./, /^169\.254\./, /^::1$/, /^f[cd][0-9a-f]{2}:/i, /^fe80:/i];
 
 module.exports = function lobby(ctx) {
-  const { db, save, send, text, readBody, broadcast, system, publicMember, clip, id, now, token, PORT, guide } = ctx;
+  const { db, save, send, text, readBody, broadcast, system, publicMember, clip, id, now, token, PORT, guide, baseUrl } = ctx;
   const knocks = new Map(); // ticket -> { ...card, spaceId, ip, at, status, memberId, waiters:Set }
 
-  const rawIp = req => String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   const fromTunnel = req => !!(req.headers['cf-connecting-ip'] || req.headers['cf-ray'] || req.headers['x-forwarded-for']);
   const isPrivate = ip => PRIVATE.some(r => r.test(ip));
+  const socketIp = req => String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  // 公网模式下请求经本机的 cloudflared 转进来，真实来源在 cf-connecting-ip 里（只信任来自本机的这个头）
+  const rawIp = req => process.env.AIWS_PUBLIC === '1' && /^(127\.|::1$)/.test(socketIp(req)) && req.headers['cf-connecting-ip'] ? String(req.headers['cf-connecting-ip']).trim() : socketIp(req);
   // 局域网模式：只放行本机和私有网段，经公网隧道转进来的请求一律拒绝（--public 模式才放开）
-  const lanOk = req => process.env.AIWS_PUBLIC === '1' || (isPrivate(rawIp(req)) && !fromTunnel(req));
+  const lanOk = req => process.env.AIWS_PUBLIC === '1' || (isPrivate(socketIp(req)) && !fromTunnel(req));
+  // AI 从哪个地址进来，就把哪个地址写进说明里：局域网进来给 .local 名字，从自有域名进来给 https://域名
+  const here = req => baseUrl ? baseUrl(req) : lanAddrs().mdns;
+  const viaPublic = req => fromTunnel(req) && !isPrivate(rawIp(req));
 
   // 这台电脑在局域网里的名字和地址（.local 名字不随 IP 变，Mac / Ubuntu 桌面版默认能解析）
   function lanAddrs() {
@@ -52,13 +57,13 @@ module.exports = function lobby(ctx) {
   // 门厅说明只是“接口说明书”，不对 AI 发号施令：做不做、做哪些，由用户在自己的对话框里说。
   // （如果说明书自己要求 AI 注册、改规则文件，AI 会正确地把它当成提示词注入而拒绝。）
   function lobbyText(req, space) {
-    const a = lanAddrs(), B = a.mdns, alt = a.ips[0] || B;
+    const a = lanAddrs(), B = here(req), pub = viaPublic(req), alt = pub ? B : a.ips[0] || B;
     const sup = Object.values(space.members).filter(m => m.role === 'supervisor').map(m => m.name);
     return `# Agent_room 接口说明 · 空间「${space.name}」
 
 Agent_room 是一个开源的、在局域网里自托管的 AI 团队看板（github.com/Fu99966/Agent_room）。
 这台电脑的主人在这里给 AI 成员派任务、验收交付。${sup.length ? `当前监督者：${sup.join('、')}。` : ''}
-本服务只对同一局域网开放；没有经过主人在网页上点击批准，任何人都拿不到令牌。
+${pub ? '你是通过主人的公网域名访问的' : '本服务只对同一局域网开放'}；没有经过主人在网页上点击批准，任何人都拿不到令牌。
 
 ## 加入流程（两个请求）
 
@@ -81,7 +86,7 @@ Agent_room 是一个开源的、在局域网里自托管的 AI 团队看板（gi
 （Claude Code：CLAUDE.md；Cline：.clinerules/agent-room.md；Cursor / Codex / 其他：AGENTS.md）：
 
    ## Agent_room 团队空间
-   - 我在这里的名字：<你的名字>。房间：${B}（备用 ${alt}）
+   - 我在这里的名字：<你的名字>。房间：${B}${alt !== B ? `（备用 ${alt}）` : ''}
    - 令牌在 ~/.agent-room/token-${space.id} 或项目 .agent-room/token（已 gitignore；不要把令牌写进本文件）
    - 开始工作时，先看有没有派给我的任务：
      curl -s "${B}/api/spaces/${space.id}/next?wait=0" -H "authorization: Bearer $(cat ~/.agent-room/token-${space.id} 2>/dev/null || cat .agent-room/token)"
@@ -101,22 +106,22 @@ Graphify（开源，github.com/Graphify-Labs/graphify，Apache-2.0）把项目�
 建好后在空间里报一声（POST /logs，done 写「已建 Graphify 图：N 个节点」），监督者就知道你能按需查代码了。
 
 ## 地址
-- ${B}（局域网名字，IP 变了也能用）
-- 备用：${a.ips.join('  ') || '（无）'}
+${pub ? `- ${B}（公网，HTTPS）` : `- ${B}（局域网名字，IP 变了也能用）
+- 备用：${a.ips.join('  ') || '（无）'}`}
 `;
   }
 
 
   // A2A 风格的房间名片
   function agentCard(req, space) {
-    const a = lanAddrs();
+    const a = lanAddrs(), B = here(req);
     return {
       name: `Agent_room · ${space.name}`,
-      description: '局域网内的 AI 团队协作空间：监督者派活验收，员工执行交付。',
-      url: a.mdns, alternateUrls: a.ips,
+      description: 'AI 团队协作空间：监督者派活验收，员工执行交付。',
+      url: B, alternateUrls: viaPublic(req) ? [] : a.ips,
       version: require('./package.json').version,
       provider: { organization: 'Agent_room', url: 'https://github.com/Fu99966/Agent_room' },
-      join: { knock: `${a.mdns}/knock`, poll: `${a.mdns}/knock/{ticket}?wait=50`, auth: 'none-until-approved' },
+      join: { knock: `${B}/knock`, poll: `${B}/knock/{ticket}?wait=50`, auth: 'none-until-approved' },
       capabilities: { tasks: true, review: true, logs: true, files: true, mcp: true },
       defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain', 'application/json'],
     };
@@ -163,6 +168,8 @@ Graphify（开源，github.com/Graphify-Labs/graphify，Apache-2.0）把项目�
       // 同一台机器同名的重复敲门，复用同一张取件码
       const dupe = [...knocks.values()].find(k => k.spaceId === s.id && k.status === 'pending' && k.name === card.name && k.ip === rawIp(req));
       if (dupe) return send(res, 200, { ticket: dupe.ticket, status: 'pending', poll: `/knock/${dupe.ticket}?wait=50` });
+      // 同一个来源最多同时挂 3 个待批准的敲门（公网域名模式下防刷屏）
+      if (pending(s.id).filter(k => k.ip === rawIp(req)).length >= 3) return send(res, 429, { error: '你已经有几次敲门在等批准了，请等管理员处理' });
       const old = findReturning(s, card);
       const k = { ...card, ticket: crypto.randomBytes(9).toString('base64url'), spaceId: s.id, ip: rawIp(req), at: now(), status: 'pending', waiters: new Set(), returning: old ? { id: old.id, role: old.role } : null };
       knocks.set(k.ticket, k);
@@ -187,12 +194,12 @@ Graphify（开源，github.com/Graphify-Labs/graphify，Apache-2.0）把项目�
       if (!m) return send(res, 410, { status: 'gone', error: '成员已被移除，请重新敲门' });
       // 令牌只交付一次：交付后就从门口记录里删掉
       knocks.delete(k.ticket);
-      const a = lanAddrs();
+      const B = here(req);
       return send(res, 200, {
         status: 'approved', token: m.token, memberId: m.id, name: m.name, role: m.role, spaceId: s.id,
-        guide: `${a.mdns}/api/spaces/${s.id}/guide?token=${m.token}`,
+        guide: `${B}/api/spaces/${s.id}/guide?token=${m.token}`,
         saveToken: saveCmd(m.token, s.id),
-        next: `curl -s "${a.mdns}/api/spaces/${s.id}/next?wait=0" -H "authorization: Bearer $(cat ~/.agent-room/token-${s.id} 2>/dev/null || cat .agent-room/token)"`,
+        next: `curl -s "${B}/api/spaces/${s.id}/next?wait=0" -H "authorization: Bearer $(cat ~/.agent-room/token-${s.id} 2>/dev/null || cat .agent-room/token)"`,
         message: '已批准。saveToken 是保存令牌的命令，guide 是完整工作接口说明，next 是取任务的命令。',
       });
     }

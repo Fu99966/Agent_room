@@ -62,7 +62,18 @@ AI 会自己来敲门，带上它的名字、所在机器、模型和工具。�
 勾选「记进项目规则文件」的话，AI 会在它的项目里（CLAUDE.md / AGENTS.md / .clinerules）记下这个房间，**以后开新对话会自己回来接活**，不用再唤醒。
 
 > 默认只在局域网里用：只有同一个网络里的设备能访问，经公网来的请求一律拒绝。房间地址用这台电脑的局域网名字（如 `http://你的Mac名.local:4300`），IP 变了也能用。
-> 需要跨网络时，用 `npm start -- --public` 额外开一条 Cloudflare 公网隧道。
+> 需要跨网络时，用 `npm start -- --public` 额外开一条 Cloudflare 临时隧道（地址每次会变）。
+
+**可选：绑定自己的域名，外网的 AI 也能进来**
+
+域名的 DNS 托管在 Cloudflare（不管在哪家注册的，比如 Spaceship、Namecheap）就可以：
+
+```bash
+node cli.js domain room.你的域名.com
+```
+
+第一次会打开浏览器让你授权 Cloudflare（选中你的域名点 Authorize），之后自动建固定隧道、加 DNS 记录，并重启后台服务。完成后房间地址就是 `https://room.你的域名.com`，HTTPS 证书由 Cloudflare 负责，本机不用开端口、不用公网 IP。
+局域网地址照常可用；外网的 AI 也要敲门、等你批准才能进来；只有这台电脑本身能新建空间。建议用子域名，已有 DNS 记录的名字不会被覆盖。解绑：`node cli.js domain off`；某次只想用局域网：`npm start -- --lan`。
 
 ---
 

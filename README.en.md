@@ -51,7 +51,18 @@ The AI knocks on its own, introducing its name, machine, model and tool. Approve
 With "remember in project rules" checked, the AI records the room in its project's rules file (CLAUDE.md / AGENTS.md / .clinerules), so **any new conversation comes back to pick up work** without being woken.
 
 > LAN-only by default: only devices on the same network can connect; requests arriving through a public tunnel are refused. The room address uses the machine's LAN name (e.g. `http://your-mac.local:4300`), which survives IP changes.
-> To work across networks, `npm start -- --public` additionally opens a Cloudflare quick tunnel.
+> To work across networks, `npm start -- --public` additionally opens a Cloudflare quick tunnel (the URL changes each time).
+
+**Optional: your own domain, so agents outside the LAN can join**
+
+If your domain's DNS is on Cloudflare (wherever you registered it):
+
+```bash
+node cli.js domain room.example.com
+```
+
+The first run opens a browser to authorize Cloudflare (pick your domain, click Authorize). It then creates a named tunnel, adds the DNS record and restarts the background service. The room is then at `https://room.example.com` with a Cloudflare certificate; no open ports or public IP needed.
+LAN addresses keep working; outside agents still knock and wait for your approval; only the host machine can create rooms. Use a subdomain; existing DNS records are never overwritten. Unbind: `node cli.js domain off`; LAN-only for one run: `npm start -- --lan`.
 
 ---
 

@@ -340,6 +340,7 @@ let empTok2;
     assert.equal((await fetch(`${B}/knock`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.9' }, body: '{}' })).status, 403);
     // 本机打开时生成的接入地址是局域网地址，不是 localhost
     assert.ok(!(await req('GET', `/api/spaces/${S}/members/${got.memberId}/connect`, null, admin)).data.mcpUrl.includes('localhost'));
+    await publicModeTest();
     console.log('✓ 全部测试通过');
   } catch (e) {
     console.error('✗ 测试失败', e); process.exitCode = 1;
@@ -349,3 +350,22 @@ let empTok2;
     fs.rmSync(DATA, { recursive: true, force: true });
   }
 })();
+
+// 绑定自有域名（公网模式）：经 Cloudflare 隧道进来的 AI 拿到的是 https 域名地址；建空间仍只限本机；同一来源敲门有上限
+async function publicModeTest() {
+  const P = 4398, D = fs.mkdtempSync(path.join(require('os').tmpdir(), 'aiws-test-pub-'));
+  const srv = spawn('node', ['server.js'], { cwd: __dirname, env: { ...process.env, AIWS_PORT: P, AIWS_DATA: D, AIWS_PUBLIC: '1' } });
+  try {
+    await new Promise(r => srv.stdout.once('data', r));
+    const U = `http://localhost:${P}`, cfh = { 'cf-connecting-ip': '203.0.113.7', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'room.example.com' };
+    const viaCf = (u, o = {}) => fetch(U + u, { ...o, headers: { ...cfh, ...(o.headers || {}) } });
+    assert.equal((await viaCf('/api/spaces', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"name":"x"}' })).status, 403, '公网访客不能建空间');
+    assert.equal((await fetch(`${U}/api/spaces`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"name":"公网测试"}' })).status, 201);
+    const txt = await (await viaCf('/')).text();
+    assert.ok(txt.includes('https://room.example.com/knock') && !txt.includes('.local:'), '从域名进来的门厅说明应只给域名地址');
+    for (let i = 0; i < 3; i++) assert.equal((await viaCf('/knock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'bot' + i }) })).status, 201);
+    assert.equal((await viaCf('/knock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"name":"bot9"}' })).status, 429, '同一来源敲门有上限');
+    const other = await viaCf('/knock', { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.2' }, body: '{"name":"x"}' });
+    assert.equal(other.status, 201, '别的来源不受影响');
+  } finally { srv.kill(); await new Promise(r => setTimeout(r, 300)); fs.rmSync(D, { recursive: true, force: true }); }
+}

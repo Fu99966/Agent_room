@@ -5,9 +5,11 @@
 //   npx github:Fu99966/Agent_room     （不用先下载代码）
 //
 // 默认局域网模式：同一网络里的 AI 一句话敲门加入，不开公网隧道。
-// 子命令：install-service（开机自启、崩溃自动重启）、uninstall-service、status
-// 可选参数：--public 额外开 Cloudflare 公网隧道（含地址牌）；--port 4300；--no-open 不自动打开浏览器；--no-beacon 不写 GitHub 地址牌
-// 公网隧道用 Cloudflare 的免费临时隧道；本机没有 cloudflared 时会自动下载到 ~/.agent-room/bin。
+// 子命令：install-service（开机自启、崩溃自动重启）、uninstall-service、status、
+//        domain <子域名>（绑定自己的域名，如 domain room.example.com；domain off 解绑）
+// 可选参数：--public 额外开 Cloudflare 临时隧道（地址会变，含地址牌）；--lan 本次只用局域网（忽略已绑定的域名）；
+//          --port 4300；--no-open 不自动打开浏览器；--no-beacon 不写 GitHub 地址牌
+// 公网隧道用 Cloudflare：绑定了域名就用固定隧道（地址不变），否则 --public 用免费临时隧道。本机没有 cloudflared 时会自动下载到 ~/.agent-room/bin。
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -22,8 +24,12 @@ const HOME = process.env.AGENT_ROOM_HOME || path.join(os.homedir(), '.agent-room
 // 从克隆的项目目录运行：数据放项目的 data/；通过 npx 运行（代码在 npm 缓存里）：数据放 ~/.agent-room/data
 const DATA = path.resolve(process.env.AIWS_DATA || (ROOT.includes(`${path.sep}_npx${path.sep}`) ? path.join(HOME, 'data') : path.join(ROOT, 'data')));
 const PUBLIC_FILE = path.join(DATA, 'public-url');
-// 默认只在局域网里用；--public 才开 Cloudflare 公网隧道（旧行为）
-const PUBLIC = flag('--public');
+// 绑定的自有域名（node cli.js domain room.example.com 写入）：有它就走 Cloudflare 固定隧道，地址永远不变
+const DOMAIN_FILE = path.join(DATA, 'domain.json');
+const readDomain = () => { try { const d = JSON.parse(fs.readFileSync(DOMAIN_FILE, 'utf8')); return d.domain && d.id ? d : null; } catch { return null; } };
+const DOMAIN = flag('--lan') ? null : readDomain();
+// 默认只在局域网里用；绑定了域名或加 --public 才开公网隧道
+const PUBLIC = !!DOMAIN || flag('--public');
 const LOCAL = !PUBLIC;
 let PORT = Number(opt('--port', process.env.AIWS_PORT || 4300));
 let stopping = false, ownServer = false, publicUrl = '', awake = false, opened = false;
@@ -38,8 +44,9 @@ function child(cmd, args, o = {}) {
   c.on('error', () => kids.delete(c));
   return c;
 }
+// 带上 text/html：根路径对 curl 返回门厅说明（还没建空间时是 404），对浏览器才返回网页
 async function probe(url, ms = 5000) {
-  try { const r = await fetch(url, { signal: AbortSignal.timeout(ms) }); return r.ok ? await r.text() : null; } catch { return null; }
+  try { const r = await fetch(url, { headers: { accept: 'text/html' }, signal: AbortSignal.timeout(ms) }); return r.ok ? await r.text() : null; } catch { return null; }
 }
 function which(bin) {
   const dirs = [...(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
@@ -140,6 +147,73 @@ async function tunnelLoop(bin) {
   }
 }
 
+// ---------- 自有域名：Cloudflare 固定隧道（Named Tunnel） ----------
+// 域名的 DNS 托管在 Cloudflare 上就能用：本机主动连出去，不用开端口、不用公网 IP，HTTPS 证书由 Cloudflare 负责。
+const CF_DIR = path.join(os.homedir(), '.cloudflared');
+const TUNNEL_NAME = 'agent-room';
+function cf(bin, args) {
+  try { return { ok: true, out: execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000 }) }; }
+  catch (e) { return { ok: false, out: String(e.stdout || '') + String(e.stderr || e.message) }; }
+}
+function findTunnel(bin) {
+  const r = cf(bin, ['tunnel', 'list', '--output', 'json', '--name', TUNNEL_NAME]);
+  if (!r.ok) throw new Error(`读取隧道列表失败：${r.out.trim().split('\n').pop()}`);
+  return (JSON.parse(r.out || '[]') || []).find(t => t.name === TUNNEL_NAME && !t.deleted_at) || null;
+}
+async function setupDomain(host) {
+  if (host === 'off') {
+    fs.rmSync(DOMAIN_FILE, { force: true });
+    log('已解绑域名，之后只在局域网里用。Cloudflare 上的隧道和 DNS 记录保留着，不需要可以去 Cloudflare 后台删除。');
+    return restartService();
+  }
+  host = String(host || '').toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(host)) throw new Error('用法：node cli.js domain room.你的域名.com（建议用子域名，不影响主站）');
+  const bin = await getCloudflared();
+  if (!fs.existsSync(path.join(CF_DIR, 'cert.pem'))) {
+    log(`\n第 1 步 / 共 3 步：授权 Cloudflare。浏览器会打开授权页（没打开就复制下面出现的链接）：\n  登录 Cloudflare → 点选 ${host.split('.').slice(-2).join('.')} → Authorize。只需要做一次。\n`);
+    require('child_process').spawnSync(bin, ['tunnel', 'login'], { stdio: 'inherit' });
+    if (!fs.existsSync(path.join(CF_DIR, 'cert.pem'))) throw new Error('没有完成授权（~/.cloudflared/cert.pem 不存在），请重新运行这条命令');
+  }
+  log('第 2 步 / 共 3 步：创建固定隧道……');
+  let t = findTunnel(bin);
+  if (!t) { const r = cf(bin, ['tunnel', 'create', TUNNEL_NAME]); if (!r.ok) throw new Error(`创建隧道失败：${r.out.trim()}`); t = findTunnel(bin); }
+  if (!t) throw new Error('隧道创建后没找到，请重试');
+  const cred = path.join(CF_DIR, `${t.id}.json`);
+  if (!fs.existsSync(cred)) throw new Error(`隧道 ${TUNNEL_NAME} 已存在，但这台电脑上没有它的凭证 ${cred}。如果是在别的电脑上建的，请在那台电脑上运行；或者在 Cloudflare 后台删掉这个隧道后重试`);
+  log(`第 3 步 / 共 3 步：把 ${host} 指向隧道……`);
+  const r = cf(bin, ['tunnel', 'route', 'dns', t.id, host]);
+  if (!r.ok && !/already configured to route to your tunnel/i.test(r.out)) {
+    if (/already exists/i.test(r.out)) throw new Error(`${host} 已经有一条 DNS 记录了。为了不误伤你现有的网站，这里不会覆盖它：换一个子域名，或者先在 Cloudflare 的 DNS 页面删掉这条记录再运行`);
+    throw new Error(`添加 DNS 记录失败：${r.out.trim()}`);
+  }
+  fs.mkdirSync(DATA, { recursive: true });
+  fs.writeFileSync(DOMAIN_FILE, JSON.stringify({ domain: host, id: t.id, name: TUNNEL_NAME, credentials: cred, at: new Date().toISOString() }, null, 1));
+  log(`\n✅ 已绑定 https://${host}`);
+  restartService();
+}
+// 后台服务在跑就让它重启以加载新配置；没装服务就提示手动启动
+function restartService() {
+  if (process.platform === 'darwin') {
+    try { execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid()}/${LABEL}`], { stdio: 'ignore' }); log('   后台服务已重启，几秒后生效。'); return; } catch { }
+  } else if (process.platform === 'linux') {
+    try { execFileSync('systemctl', ['--user', 'restart', 'agent-room'], { stdio: 'ignore' }); log('   后台服务已重启，几秒后生效。'); return; } catch { }
+  }
+  log('   运行 npm start（或 npx github:Fu99966/Agent_room）启动后生效。');
+}
+// 守着固定隧道：断了就重连，地址不变
+async function namedTunnelLoop(bin) {
+  while (!stopping) {
+    const c = child(bin, ['tunnel', '--no-autoupdate', 'run', '--url', `http://localhost:${PORT}`, '--credentials-file', DOMAIN.credentials, DOMAIN.id]);
+    const exited = new Promise(r => c.once('exit', r));
+    let up = false;
+    const onData = d => { if (!up && /Registered tunnel connection/i.test(String(d))) { up = true; setPublic(`https://${DOMAIN.domain}`); } };
+    c.stdout.on('data', onData); c.stderr.on('data', onData);
+    const t = setTimeout(() => { if (!up) log(`⚠ 固定隧道 60 秒还没连上 Cloudflare，继续等待（局域网照常可用）`); }, 60000);
+    await exited; clearTimeout(t);
+    if (!stopping) { log('⚠ 固定隧道断开了，5 秒后重连（地址不变）'); await sleep(5000); }
+  }
+}
+
 // ---------- 固定「地址牌」：把当前公网地址写进一个固定的 GitHub secret gist ----------
 // 隧道换了新地址，AI 连不上时去读这个 gist 就能拿到新地址，不用人去逐个通知。
 // 用这台电脑已经登录的 gh（GitHub CLI）；没有 gh 或没登录就跳过，不影响其他功能。
@@ -169,7 +243,7 @@ function setPublic(url) {
   publicUrl = url;
   fs.mkdirSync(DATA, { recursive: true });
   fs.writeFileSync(PUBLIC_FILE, url);
-  publishBeacon(url);
+  if (!DOMAIN) publishBeacon(url); // 自有域名地址不变，不需要地址牌
   banner(changed);
   openBrowser();
 }
@@ -205,13 +279,13 @@ function banner(changed) {
   const a = adminLink(`http://localhost:${PORT}`);
   const line = '─'.repeat(64);
   log(`\n${line}`);
-  log(changed ? ' ⚠ 公网地址变了' : ' ✅ Agent_room 已启动（局域网模式）');
+  log(changed ? ' ⚠ 公网地址变了' : ` ✅ Agent_room 已启动（${DOMAIN ? `局域网 + ${DOMAIN.domain}` : PUBLIC ? '局域网 + 临时公网隧道' : '局域网模式'}）`);
   log(`   房间地址：${lan.mdns}${lan.ips.length ? `   备用 ${lan.ips.join('  ')}` : ''}`);
   log('');
   log('   拉 AI 进来：在网页上点「＋ 拉 AI 进来」复制那段话，发给同一个局域网里的任何 AI（没有令牌，可以随便转发）。');
   log(`   它会自己读 ${lan.mdns} 的说明来敲门，你在网页顶部点「批准」就进来了。`);
   log('');
-  if (PUBLIC) log(`   公网地址：${publicUrl || '连接中…'}`);
+  if (PUBLIC) log(`   公网地址：${publicUrl || (DOMAIN ? `https://${DOMAIN.domain}（连接中…）` : '连接中…')}${DOMAIN ? '' : '（临时地址，重连后会变）'}`);
   if (a) log(`   管理员页面：${opened || flag('--no-open') ? '' : '已在浏览器打开 · '}http://localhost:${PORT}`);
   else log(`   第一次使用：在打开的网页里创建空间`);
   log(`   数据目录：${DATA}`);
@@ -235,7 +309,7 @@ process.on('SIGTERM', stop);
 const LABEL = 'com.agent-room';
 function serviceCmd(cmd) {
   const node = process.execPath, script = path.join(ROOT, 'cli.js');
-  const args = [script, '--no-open', ...argv.filter(x => !['install-service', 'uninstall-service', 'status'].includes(x))];
+  const args = [script, '--no-open', ...argv.filter(x => !['install-service', 'uninstall-service', 'status', '--no-open'].includes(x))];
   const logFile = path.join(DATA, 'launcher.log');
   if (process.platform === 'darwin') {
     const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
@@ -281,8 +355,11 @@ function serviceCmd(cmd) {
 }
 const sub = argv.find(x => ['install-service', 'uninstall-service', 'status'].includes(x));
 if (sub) { serviceCmd(sub); process.exit(0); }
+if (argv[0] === 'domain') {
+  setupDomain(argv[1]).then(() => process.exit(0), e => { console.error(`✗ ${e.message}`); process.exit(1); });
+} else main();
 
-(async () => {
+function main() { (async () => {
   const [major] = process.versions.node.split('.').map(Number);
   if (major < 18) { console.error(`需要 Node.js 18 或更高版本（当前 ${process.versions.node}）`); process.exit(1); }
   await ensureServer();
@@ -292,5 +369,5 @@ if (sub) { serviceCmd(sub); process.exit(0); }
   try { bin = await getCloudflared(); }
   catch (e) { log(`⚠ ${e.message}。先以本机模式运行；手动安装 cloudflared 后重新启动即可生成公网地址。`); banner(false); openBrowser(); return; }
   setTimeout(openBrowser, 25000); // 隧道迟迟连不上时，先打开本机页面
-  tunnelLoop(bin);
-})().catch(e => { console.error('启动失败：', e.message); stop(); process.exitCode = 1; });
+  if (DOMAIN) { banner(false); namedTunnelLoop(bin); } else tunnelLoop(bin);
+})().catch(e => { console.error('启动失败：', e.message); stop(); process.exitCode = 1; }); }

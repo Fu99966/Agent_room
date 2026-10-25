@@ -630,10 +630,11 @@ $('#msgForm').onsubmit = async e => {
 // ---------- 一句话拉 AI 进来（局域网） ----------
 $('#inviteAiBtn').onclick = () => {
   const lan = S.lan || { mdns: location.origin, ips: [] };
-  const sentence = () => `请加入我在局域网里自己搭的 AI 团队看板 Agent_room：用 curl 读 ${lan.mdns} 的接口说明（打不开就用 ${lan.ips[0] || lan.mdns}），按说明敲门，介绍里写上你的名字、hostname、模型和所在工具。我在网页上批准后，保存令牌，然后处理派给你的任务，做完一项接着取下一项。${$('#withRules').checked ? '另外，我同意你按说明里的约定，把这个房间记进本项目的规则文件，以后开新对话先去看有没有派给你的任务。' : ''}${$('#withGraph').checked ? '我也同意你按说明里「省上下文」一节，装 Graphify 给你工作的代码仓库建一张代码知识图（只解析代码、本机离线），以后查代码先用 graphify query。' : ''}删除大量文件、强制推送、发布上线、动用密钥前先问我。`;
+  const pub = /^https:\/\//.test(S.publicUrl || '') ? S.publicUrl : '';
+  const sentence = () => `请加入我自己搭的 AI 团队看板 Agent_room：用 curl 读 ${lan.mdns} 的接口说明（打不开就用 ${[lan.ips[0], pub].filter(Boolean).join('，再不行用 ') || lan.mdns}），按说明敲门，介绍里写上你的名字、hostname、模型和所在工具。我在网页上批准后，保存令牌，然后处理派给你的任务，做完一项接着取下一项。${$('#withRules').checked ? '另外，我同意你按说明里的约定，把这个房间记进本项目的规则文件，以后开新对话先去看有没有派给你的任务。' : ''}${$('#withGraph').checked ? '我也同意你按说明里「省上下文」一节，装 Graphify 给你工作的代码仓库建一张代码知识图（只解析代码、本机离线），以后查代码先用 graphify query。' : ''}删除大量文件、强制推送、发布上线、动用密钥前先问我。`;
   $('#oneLine').value = sentence();
   $('#withRules').onchange = $('#withGraph').onchange = () => { $('#oneLine').value = sentence(); };
-  $('#lanHint').innerHTML = `首选地址 <code class="ic">${esc(lan.mdns)}</code> 是这台电脑的局域网名字，IP 变了也能用。备用：${lan.ips.map(x => `<code class="ic">${esc(x)}</code>`).join(' ') || '无'}。<br>不在同一个网络里的 AI 打不开，这是故意的。`;
+  $('#lanHint').innerHTML = `首选地址 <code class="ic">${esc(lan.mdns)}</code> 是这台电脑的局域网名字，IP 变了也能用。备用：${lan.ips.map(x => `<code class="ic">${esc(x)}</code>`).join(' ') || '无'}。${pub ? `<br>公网地址 <code class="ic">${esc(pub)}</code>：不在同一个网络里的 AI 也能用它敲门，仍然要你批准才能进来。` : '<br>不在同一个网络里的 AI 打不开，这是故意的。想让外网的 AI 也能进来：在终端运行 <code class="ic">node cli.js domain room.你的域名.com</code>。'}`;
   $('#inviteAiDlg').showModal();
 };
 $('#inviteAiDlg').onclick = async e => { const c = e.target.dataset.copy; if (c) { const el = $('#' + c); el.select(); await navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy')); toast('已复制，发给任意一个 AI 就行'); } };

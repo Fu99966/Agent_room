@@ -544,7 +544,7 @@ EOF`,
   };
 }
 
-const LOBBY = require('./lobby.js')({ db, save, send, text, readBody, broadcast, system: (sp, t) => system(sp, t), publicMember, clip, id, now, token, PORT, guide });
+const LOBBY = require('./lobby.js')({ db, save, send, text, readBody, broadcast, system: (sp, t) => system(sp, t), publicMember, clip, id, now, token, PORT, guide, baseUrl });
 const FILES = require('./files.js')({ db, save, send, broadcast, addMessage, baseUrl, id, now, clip, FILES_DIR });
 
 // ---------- MCP（Streamable HTTP，JSON-RPC）：工具内部转调上面的 HTTP 接口，权限规则只维护一处 ----------
