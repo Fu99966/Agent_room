@@ -160,7 +160,10 @@ function cf(bin, args) {
 function findTunnel(bin) {
   const r = cf(bin, ['tunnel', 'list', '--output', 'json', '--name', TUNNEL_NAME]);
   if (!r.ok) throw new Error(`读取隧道列表失败：${r.out.trim().split('\n').pop()}`);
-  return (JSON.parse(r.out || '[]') || []).find(t => t.name === TUNNEL_NAME && !t.deleted_at) || null;
+  // deleted_at 未删除时是零值时间 0001-01-01，不是空
+  const alive = t => !t.deleted_at || t.deleted_at.startsWith('0001-');
+  const json = r.out.slice(r.out.indexOf('['), r.out.lastIndexOf(']') + 1) || '[]'; // 版本过旧的警告会混在输出里
+  return (JSON.parse(json) || []).find(t => t.name === TUNNEL_NAME && alive(t)) || null;
 }
 async function setupDomain(host) {
   if (host === 'off') {
