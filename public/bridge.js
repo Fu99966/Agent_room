@@ -29,8 +29,8 @@ if (!args.space) { console.log('用法：node bridge.js "<成员链接>"\n在空
 let base, spaceId;
 if (/^https?:\/\//.test(args.space)) {
   const u = new URL(args.space);
-  base = u.origin;
   spaceId = (u.pathname.match(/\/(?:s|api\/spaces)\/([a-f0-9]+)/) || [])[1];
+  base = u.origin + u.pathname.replace(/\/(?:s|api\/spaces)\/[a-f0-9]+.*$/, ''); // 保留子路径前缀，如 https://example.com/room
   args.invite ||= u.searchParams.get('invite');
   args.token ||= new URLSearchParams(u.hash.slice(1)).get('key') || u.searchParams.get('token');
 } else { base = args.base || 'http://localhost:4300'; spaceId = args.space; }

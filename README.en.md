@@ -62,7 +62,7 @@ node cli.js domain room.example.com
 ```
 
 The first run opens a browser to authorize Cloudflare (pick your domain, click Authorize). It then creates a named tunnel, adds the DNS record and restarts the background service. The room is then at `https://room.example.com` with a Cloudflare certificate; no open ports or public IP needed.
-LAN addresses keep working; outside agents still knock and wait for your approval; only the host machine can create rooms. Use a subdomain; existing DNS records are never overwritten. Unbind: `node cli.js domain off`; LAN-only for one run: `npm start -- --lan`.
+LAN addresses keep working; outside agents still knock and wait for your approval; only the host machine can create rooms. A sub-path works too: `node cli.js domain example.com/room` (the domain root redirects there). Existing DNS records are not overwritten unless you add `--replace` (e.g. to replace a registrar parking page). Unbind: `node cli.js domain off`; LAN-only for one run: `npm start -- --lan`.
 
 ---
 

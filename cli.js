@@ -6,7 +6,8 @@
 //
 // 默认局域网模式：同一网络里的 AI 一句话敲门加入，不开公网隧道。
 // 子命令：install-service（开机自启、崩溃自动重启）、uninstall-service、status、
-//        domain <子域名>（绑定自己的域名，如 domain room.example.com；domain off 解绑）
+//        domain <地址>（绑定自己的域名：domain room.example.com 或子路径 domain example.com/room；
+//        名字上已有 DNS 记录时要加 --replace 才会替换；domain off 解绑）
 // 可选参数：--public 额外开 Cloudflare 临时隧道（地址会变，含地址牌）；--lan 本次只用局域网（忽略已绑定的域名）；
 //          --port 4300；--no-open 不自动打开浏览器；--no-beacon 不写 GitHub 地址牌
 // 公网隧道用 Cloudflare：绑定了域名就用固定隧道（地址不变），否则 --public 用免费临时隧道。本机没有 cloudflared 时会自动下载到 ~/.agent-room/bin。
@@ -71,7 +72,7 @@ async function ensureServer() {
   const start = () => {
     fs.mkdirSync(DATA, { recursive: true });
     const out = fs.openSync(path.join(DATA, 'server.log'), 'a');
-    const c = spawn(process.execPath, [path.join(ROOT, 'server.js')], { env: { ...process.env, AIWS_PORT: String(PORT), AIWS_DATA: DATA, AIWS_PUBLIC: PUBLIC ? '1' : '' }, stdio: ['ignore', out, out] });
+    const c = spawn(process.execPath, [path.join(ROOT, 'server.js')], { env: { ...process.env, AIWS_PORT: String(PORT), AIWS_DATA: DATA, AIWS_PUBLIC: PUBLIC ? '1' : '', AIWS_BASE: DOMAIN?.path || '' }, stdio: ['ignore', out, out] });
     kids.add(c);
     c.on('exit', code => { kids.delete(c); if (!stopping) { log(`⚠ 服务意外退出（code=${code}），3 秒后自动重启。日志：${path.join(DATA, 'server.log')}`); setTimeout(start, 3000); } });
   };
@@ -166,8 +167,11 @@ async function setupDomain(host) {
     log('已解绑域名，之后只在局域网里用。Cloudflare 上的隧道和 DNS 记录保留着，不需要可以去 Cloudflare 后台删除。');
     return restartService();
   }
-  host = String(host || '').toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-  if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(host)) throw new Error('用法：node cli.js domain room.你的域名.com（建议用子域名，不影响主站）');
+  const raw = String(host || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  host = raw.split('/')[0].toLowerCase();
+  const sub = raw.slice(host.length); // 子路径，如 /room
+  if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(host) || (sub && !/^\/[A-Za-z0-9_-]+$/.test(sub))) throw new Error('用法：node cli.js domain room.你的域名.com，或 node cli.js domain 你的域名.com/room');
+  const replace = argv.includes('--replace');
   const bin = await getCloudflared();
   if (!fs.existsSync(path.join(CF_DIR, 'cert.pem'))) {
     log(`\n第 1 步 / 共 3 步：授权 Cloudflare。浏览器会打开授权页（没打开就复制下面出现的链接）：\n  登录 Cloudflare → 点选 ${host.split('.').slice(-2).join('.')} → Authorize。只需要做一次。\n`);
@@ -181,14 +185,14 @@ async function setupDomain(host) {
   const cred = path.join(CF_DIR, `${t.id}.json`);
   if (!fs.existsSync(cred)) throw new Error(`隧道 ${TUNNEL_NAME} 已存在，但这台电脑上没有它的凭证 ${cred}。如果是在别的电脑上建的，请在那台电脑上运行；或者在 Cloudflare 后台删掉这个隧道后重试`);
   log(`第 3 步 / 共 3 步：把 ${host} 指向隧道……`);
-  const r = cf(bin, ['tunnel', 'route', 'dns', t.id, host]);
+  const r = cf(bin, ['tunnel', 'route', 'dns', ...(replace ? ['--overwrite-dns'] : []), t.id, host]);
   if (!r.ok && !/already configured to route to your tunnel/i.test(r.out)) {
-    if (/already exists/i.test(r.out)) throw new Error(`${host} 已经有一条 DNS 记录了。为了不误伤你现有的网站，这里不会覆盖它：换一个子域名，或者先在 Cloudflare 的 DNS 页面删掉这条记录再运行`);
+    if (/already exists/i.test(r.out)) throw new Error(`${host} 已经有 DNS 记录了（可能正指向你现有的网站或停放页）。为了不误伤它，默认不覆盖。\n  确认要让 ${host} 整个改由这台电脑提供：在命令末尾加 --replace 重新运行（原来的网站会打不开）；\n  如果提示还有记录删不掉，到 Cloudflare 的 DNS 页面手动删掉 ${host} 的 A / AAAA 记录后再运行。\n  不想动主站就改用子域名：node cli.js domain room.${host}`);
     throw new Error(`添加 DNS 记录失败：${r.out.trim()}`);
   }
   fs.mkdirSync(DATA, { recursive: true });
-  fs.writeFileSync(DOMAIN_FILE, JSON.stringify({ domain: host, id: t.id, name: TUNNEL_NAME, credentials: cred, at: new Date().toISOString() }, null, 1));
-  log(`\n✅ 已绑定 https://${host}`);
+  fs.writeFileSync(DOMAIN_FILE, JSON.stringify({ domain: host, path: sub, id: t.id, name: TUNNEL_NAME, credentials: cred, at: new Date().toISOString() }, null, 1));
+  log(`\n✅ 已绑定 https://${host}${sub}${sub ? `（打开 https://${host} 会自动跳到这里）` : ''}`);
   restartService();
 }
 // 后台服务在跑就让它重启以加载新配置；没装服务就提示手动启动
@@ -206,7 +210,7 @@ async function namedTunnelLoop(bin) {
     const c = child(bin, ['tunnel', '--no-autoupdate', 'run', '--url', `http://localhost:${PORT}`, '--credentials-file', DOMAIN.credentials, DOMAIN.id]);
     const exited = new Promise(r => c.once('exit', r));
     let up = false;
-    const onData = d => { if (!up && /Registered tunnel connection/i.test(String(d))) { up = true; setPublic(`https://${DOMAIN.domain}`); } };
+    const onData = d => { if (!up && /Registered tunnel connection/i.test(String(d))) { up = true; setPublic(`https://${DOMAIN.domain}${DOMAIN.path || ''}`); } };
     c.stdout.on('data', onData); c.stderr.on('data', onData);
     const t = setTimeout(() => { if (!up) log(`⚠ 固定隧道 60 秒还没连上 Cloudflare，继续等待（局域网照常可用）`); }, 60000);
     await exited; clearTimeout(t);
@@ -285,7 +289,7 @@ function banner(changed) {
   log('   拉 AI 进来：在网页上点「＋ 拉 AI 进来」复制那段话，发给同一个局域网里的任何 AI（没有令牌，可以随便转发）。');
   log(`   它会自己读 ${lan.mdns} 的说明来敲门，你在网页顶部点「批准」就进来了。`);
   log('');
-  if (PUBLIC) log(`   公网地址：${publicUrl || (DOMAIN ? `https://${DOMAIN.domain}（连接中…）` : '连接中…')}${DOMAIN ? '' : '（临时地址，重连后会变）'}`);
+  if (PUBLIC) log(`   公网地址：${publicUrl || (DOMAIN ? `https://${DOMAIN.domain}${DOMAIN.path || ''}（连接中…）` : '连接中…')}${DOMAIN ? '' : '（临时地址，重连后会变）'}`);
   if (a) log(`   管理员页面：${opened || flag('--no-open') ? '' : '已在浏览器打开 · '}http://localhost:${PORT}`);
   else log(`   第一次使用：在打开的网页里创建空间`);
   log(`   数据目录：${DATA}`);

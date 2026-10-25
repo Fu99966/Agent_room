@@ -73,7 +73,7 @@ node cli.js domain room.你的域名.com
 ```
 
 第一次会打开浏览器让你授权 Cloudflare（选中你的域名点 Authorize），之后自动建固定隧道、加 DNS 记录，并重启后台服务。完成后房间地址就是 `https://room.你的域名.com`，HTTPS 证书由 Cloudflare 负责，本机不用开端口、不用公网 IP。
-局域网地址照常可用；外网的 AI 也要敲门、等你批准才能进来；只有这台电脑本身能新建空间。建议用子域名，已有 DNS 记录的名字不会被覆盖。解绑：`node cli.js domain off`；某次只想用局域网：`npm start -- --lan`。
+局域网地址照常可用；外网的 AI 也要敲门、等你批准才能进来；只有这台电脑本身能新建空间。也可以放在子路径下：`node cli.js domain 你的域名.com/room`（打开域名根路径会跳到 /room）。已有 DNS 记录的名字默认不覆盖，确认要替换（比如注册商的停放页）时加 `--replace`。解绑：`node cli.js domain off`；某次只想用局域网：`npm start -- --lan`。
 
 ---
 

@@ -368,14 +368,16 @@ function noteFail(req) {
 setInterval(() => { for (const [k, v] of authFails) if (now() - v.at > 600000) authFails.delete(k); }, 600000).unref();
 
 let PUBLIC_URL = '';
+// 部署在子路径下（如 https://example.com/room）时的前缀；局域网访问不带前缀也照常可用
+const BASE = /^\/[A-Za-z0-9_-]+$/.test(process.env.AIWS_BASE || '') ? process.env.AIWS_BASE : '';
 function readPublicUrl() {
-  try { const u = fs.readFileSync(path.join(DATA_DIR, 'public-url'), 'utf8').trim().replace(/\/+$/, ''); return /^https?:\/\/[^\s/]+$/.test(u) ? u : ''; } catch { return ''; }
+  try { const u = fs.readFileSync(path.join(DATA_DIR, 'public-url'), 'utf8').trim().replace(/\/+$/, ''); return /^https?:\/\/[^\s/]+(\/[A-Za-z0-9_-]+)?$/.test(u) ? u : ''; } catch { return ''; }
 }
 function baseUrl(req) {
   const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
   const host = req.headers['x-forwarded-host'] || req.headers.host || '';
   if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host)) { if (process.env.AIWS_PUBLIC === '1' && PUBLIC_URL) return PUBLIC_URL; return LOBBY.lanAddrs().mdns; }
-  return `${proto}://${host}`;
+  return `${proto}://${host}${req.basePrefix || ''}`;
 }
 PUBLIC_URL = readPublicUrl();
 setInterval(() => {
@@ -599,7 +601,7 @@ async function mcp(req, res, spaceId) {
         if (tool.local === 'upload') {
           const a = m.params.arguments || {};
           const q = x => `'${String(x).replace(/'/g, "'\\''")}'`;
-          const B = `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers['x-forwarded-host'] || req.headers.host}`;
+          const B = baseUrl(req);
           const opt = [a.task_id && `--task ${q(a.task_id)}`, a.caption && `--text ${q(a.caption)}`].filter(Boolean).join(' ');
           const cmd = `curl -fsSL ${B}/upload.sh -o /tmp/ai-space-upload.sh && AI_SPACE_URL=${B}/s/${space.id} AI_SPACE_TOKEN=${tok} bash /tmp/ai-space-upload.sh ${q(a.path)} ${opt}`.trim();
           out.push(rpcOut(m.id, { content: [{ type: 'text', text: `工具读不到你的硬盘，请在终端执行下面这条命令完成上传（自动分块、失败重试；视频超过 8MB 且有 ffmpeg 时会先压缩成 720p）：\n\n${cmd}\n\n最后一行会输出文件 ID。` }] }));
@@ -607,7 +609,7 @@ async function mcp(req, res, spaceId) {
         }
         const mine = { since: mcpSince.get(tok) };
         const [method, p, b] = tool.call(m.params.arguments || {}, mine);
-        const r = await fetch(`http://127.0.0.1:${PORT}/api/spaces/${space.id}${p}`, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}`, 'x-forwarded-host': req.headers['x-forwarded-host'] || req.headers.host, 'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'http' }, body: b ? JSON.stringify(b) : undefined });
+        const r = await fetch(`http://127.0.0.1:${PORT}/api/spaces/${space.id}${p}`, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}`, 'x-forwarded-host': req.headers['x-forwarded-host'] || req.headers.host, 'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'http', ...(req.basePrefix ? { 'x-forwarded-prefix': req.basePrefix } : {}) }, body: b ? JSON.stringify(b) : undefined });
         const txt = await r.text();
         if (tool.name === 'next' && r.ok) { try { mcpSince.set(tok, JSON.parse(txt).now); } catch { } }
         out.push(rpcOut(m.id, { content: [{ type: 'text', text: txt }], isError: !r.ok }));
@@ -1026,6 +1028,13 @@ const SEC_HEADERS = {
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  if (BASE) {
+    // 子路径部署：去掉前缀再路由，生成的地址再加回去。域名根路径跳到房间
+    if (url.pathname === BASE || url.pathname.startsWith(BASE + '/')) { req.basePrefix = BASE; url.pathname = url.pathname.slice(BASE.length) || '/'; }
+    else if (req.headers['x-forwarded-prefix'] === BASE && isLoopback(req)) req.basePrefix = BASE;
+    else if (viaProxy(req) && url.pathname === '/') { res.writeHead(302, { location: BASE + '/' }); return res.end(); }
+    else if (viaProxy(req)) return send(res, 404, { error: 'not found' });
+  }
   if (req.method === 'OPTIONS') {
     res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, mcp-session-id, mcp-protocol-version', 'access-control-allow-methods': 'GET, POST, PATCH, DELETE' });
     return res.end();
@@ -1042,6 +1051,8 @@ const server = http.createServer(async (req, res) => {
   const fp = path.normalize(path.join(PUBLIC, file));
   if (!fp.startsWith(PUBLIC) || !fs.existsSync(fp) || fs.statSync(fp).isDirectory()) return send(res, 404, { error: 'not found' });
   res.writeHead(200, { ...SEC_HEADERS, 'content-type': (MIME[path.extname(fp)] || 'application/octet-stream') + '; charset=utf-8', 'cache-control': 'no-cache' });
+  // 网页里的资源地址和前端接口地址都要带上子路径前缀
+  if (file === '/index.html' && req.basePrefix) return res.end(fs.readFileSync(fp, 'utf8').replace(/(href|src)="\//g, `$1="${req.basePrefix}/`).replace('<meta name="base" content="">', `<meta name="base" content="${req.basePrefix}">`));
   fs.createReadStream(fp).pipe(res);
 });
 server.requestTimeout = 0;

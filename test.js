@@ -340,7 +340,8 @@ let empTok2;
     assert.equal((await fetch(`${B}/knock`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '203.0.113.9' }, body: '{}' })).status, 403);
     // 本机打开时生成的接入地址是局域网地址，不是 localhost
     assert.ok(!(await req('GET', `/api/spaces/${S}/members/${got.memberId}/connect`, null, admin)).data.mcpUrl.includes('localhost'));
-    await publicModeTest();
+    await publicModeTest('');
+    await publicModeTest('/room');
     console.log('✓ 全部测试通过');
   } catch (e) {
     console.error('✗ 测试失败', e); process.exitCode = 1;
@@ -352,17 +353,27 @@ let empTok2;
 })();
 
 // 绑定自有域名（公网模式）：经 Cloudflare 隧道进来的 AI 拿到的是 https 域名地址；建空间仍只限本机；同一来源敲门有上限
-async function publicModeTest() {
+// base 非空时模拟部署在子路径（https://room.example.com/room）
+async function publicModeTest(base) {
   const P = 4398, D = fs.mkdtempSync(path.join(require('os').tmpdir(), 'aiws-test-pub-'));
-  const srv = spawn('node', ['server.js'], { cwd: __dirname, env: { ...process.env, AIWS_PORT: P, AIWS_DATA: D, AIWS_PUBLIC: '1' } });
+  const srv = spawn('node', ['server.js'], { cwd: __dirname, env: { ...process.env, AIWS_PORT: P, AIWS_DATA: D, AIWS_PUBLIC: '1', AIWS_BASE: base } });
   try {
     await new Promise(r => srv.stdout.once('data', r));
     const U = `http://localhost:${P}`, cfh = { 'cf-connecting-ip': '203.0.113.7', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'room.example.com' };
-    const viaCf = (u, o = {}) => fetch(U + u, { ...o, headers: { ...cfh, ...(o.headers || {}) } });
+    const viaCf = (u, o = {}) => fetch(U + base + u, { ...o, redirect: 'manual', headers: { ...cfh, ...(o.headers || {}) } });
     assert.equal((await viaCf('/api/spaces', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"name":"x"}' })).status, 403, '公网访客不能建空间');
     assert.equal((await fetch(`${U}/api/spaces`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"name":"公网测试"}' })).status, 201);
     const txt = await (await viaCf('/')).text();
-    assert.ok(txt.includes('https://room.example.com/knock') && !txt.includes('.local:'), '从域名进来的门厅说明应只给域名地址');
+    assert.ok(txt.includes(`https://room.example.com${base}/knock`) && !txt.includes('.local:'), '从域名进来的门厅说明应只给域名地址');
+    if (base) {
+      const html = await (await viaCf('/s/abc', { headers: { accept: 'text/html' } })).text();
+      assert.ok(html.includes(`src="${base}/app.js`) && html.includes(`content="${base}"`), '子路径部署时网页资源要带前缀');
+      assert.equal((await viaCf('/app.js')).status, 200);
+      const root = await fetch(U + '/', { redirect: 'manual', headers: cfh });
+      assert.equal(root.status, 302, '域名根路径跳到子路径'); assert.equal(root.headers.get('location'), base + '/');
+      assert.equal((await fetch(U + '/api/host', { headers: cfh })).status, 404, '子路径外的公网请求不处理');
+      assert.equal((await fetch(U + '/api/host')).status, 200, '局域网/本机不带前缀照常可用');
+    }
     for (let i = 0; i < 3; i++) assert.equal((await viaCf('/knock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'bot' + i }) })).status, 201);
     assert.equal((await viaCf('/knock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"name":"bot9"}' })).status, 429, '同一来源敲门有上限');
     const other = await viaCf('/knock', { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.2' }, body: '{"name":"x"}' });

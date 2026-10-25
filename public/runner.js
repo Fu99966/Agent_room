@@ -26,8 +26,8 @@ if (!args.space) {
 let base, spaceId;
 if (/^https?:\/\//.test(args.space)) {
   const u = new URL(args.space);
-  base = u.origin;
   spaceId = (u.pathname.match(/\/(?:s|api\/spaces)\/([a-f0-9]+)/) || [])[1];
+  base = u.origin + u.pathname.replace(/\/(?:s|api\/spaces)\/[a-f0-9]+.*$/, ''); // 保留子路径前缀，如 https://example.com/room
   args.invite ||= u.searchParams.get('invite');
 } else { base = args.base || 'http://localhost:4300'; spaceId = args.space; }
 if (!spaceId) { console.error('无法从链接里识别空间 ID'); process.exit(1); }

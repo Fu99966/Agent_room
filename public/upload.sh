@@ -26,7 +26,7 @@ done
 [ -n "$FILE" ] && [ -f "$FILE" ] || { echo "找不到文件：$FILE" >&2; exit 1; }
 [ -n "$SPACE_URL" ] && [ -n "$TOKEN" ] || { echo "缺少 AI_SPACE_URL / AI_SPACE_TOKEN（或 --space / --token）" >&2; exit 1; }
 
-ORIGIN=$(printf '%s' "$SPACE_URL" | sed -E 's#^(https?://[^/]+).*#\1#')
+ORIGIN=$(printf '%s' "$SPACE_URL" | sed -E 's#/(s|api/spaces)/[a-f0-9]+.*$##')  # 保留子路径前缀
 SID=$(printf '%s' "$SPACE_URL" | sed -nE 's#.*/(s|spaces|mcp)/([a-f0-9]+).*#\2#p')
 [ -n "$SID" ] || { echo "无法从 $SPACE_URL 识别空间 ID" >&2; exit 1; }
 API="$ORIGIN/api/spaces/$SID/files"

@@ -1,3 +1,5 @@
+// 部署在子路径下（如 https://example.com/room）时，服务端把前缀写进 <meta name="base">
+const BASE = document.querySelector('meta[name=base]')?.content || '';
 // AI 协作空间前端
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -33,7 +35,7 @@ const show = id => ['home', 'join', 'app'].forEach(x => $('#' + x).classList.tog
 
 // ---------- 路由 ----------
 function route() {
-  const m = location.pathname.match(/^\/s\/([a-f0-9]+)/);
+  const m = location.pathname.slice(BASE.length).match(/^\/s\/([a-f0-9]+)/);
   if (!m) return home();
   sid = m[1];
   const invite = new URLSearchParams(location.search).get('invite');
@@ -41,7 +43,7 @@ function route() {
   const key = new URLSearchParams(location.hash.slice(1)).get('key');
   if (key) {
     store.set(sid, { token: key });
-    history.replaceState(null, '', `/s/${sid}`);
+    history.replaceState(null, '', `${BASE}/s/${sid}`);
   }
   const saved = store.get(sid);
   if (saved) { tok = saved.token; return enter(); }
@@ -51,22 +53,22 @@ function route() {
 
 function home() {
   show('home');
-  fetch('/api/host').then(r => r.json()).then(h => {
+  fetch(`${BASE}/api/host`).then(r => r.json()).then(h => {
     if (h.canCreate) return;
     const f = $('#createForm');
     if (h.hostKey) { if (!f.hostKey) f.insertAdjacentHTML('afterbegin', '<label>主机口令<input name="hostKey" type="password" required autocomplete="off" /></label>'); }
     else { f.querySelectorAll('input,button').forEach(x => x.disabled = true); f.insertAdjacentHTML('beforebegin', '<p class="rcpt warn">只能在运行 Agent_room 的那台电脑上新建空间。别的设备请用邀请链接或登录链接进入已有空间。</p>'); }
   }).catch(() => {});
   const list = Object.entries(store.all());
-  $('#mySpaces').innerHTML = list.length ? `<h3>本设备已加入的空间</h3>${list.map(([id, v]) => `<a class="space-link" href="/s/${id}">${esc(v.name || id)}<span>${ROLE[v.role] || ''}</span></a>`).join('')}` : '';
+  $('#mySpaces').innerHTML = list.length ? `<h3>本设备已加入的空间</h3>${list.map(([id, v]) => `<a class="space-link" href="${BASE}/s/${id}">${esc(v.name || id)}<span>${ROLE[v.role] || ''}</span></a>`).join('')}` : '';
 }
 $('#createForm').onsubmit = async e => {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(e.target));
   try {
-    const r = await call('POST', '/api/spaces', f, f.hostKey ? { 'x-host-key': f.hostKey } : undefined);
+    const r = await call('POST', `${BASE}/api/spaces`, f, f.hostKey ? { 'x-host-key': f.hostKey } : undefined);
     store.set(r.spaceId, { token: r.token, name: f.name, role: 'admin' });
-    history.pushState(null, '', `/s/${r.spaceId}`);
+    history.pushState(null, '', `${BASE}/s/${r.spaceId}`);
     route();
     setTimeout(openInvite, 600);
   } catch (err) { toast(err.message); }
@@ -79,10 +81,10 @@ function joinPage(invite) {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     try {
-      const r = await call('POST', `/api/spaces/${sid}/join`, { ...f, invite });
+      const r = await call('POST', `${BASE}/api/spaces/${sid}/join`, { ...f, invite });
       tok = r.token;
       store.set(sid, { token: r.token, role: 'employee' });
-      history.replaceState(null, '', `/s/${sid}`);
+      history.replaceState(null, '', `${BASE}/s/${sid}`);
       enter();
     } catch (err) { toast(err.message); }
   };
@@ -98,9 +100,9 @@ function applyState(st) {
   renderAll();
 }
 async function refresh() {
-  try { applyState(await call('GET', `/api/spaces/${sid}/state`)); }
+  try { applyState(await call('GET', `${BASE}/api/spaces/${sid}/state`)); }
   catch (err) {
-    if (/身份无效|空间不存在/.test(err.message)) { es?.close(); clearInterval(poll); store.del(sid); toast(err.message); setTimeout(() => location.href = '/', 1500); }
+    if (/身份无效|空间不存在/.test(err.message)) { es?.close(); clearInterval(poll); store.del(sid); toast(err.message); setTimeout(() => location.href = BASE + '/', 1500); }
     else { $('#conn').textContent = '○ 连接中断，重试中…'; $('#conn').className = 'conn'; }
   }
 }
@@ -109,13 +111,13 @@ async function enter() {
   show('app');
   await refresh();
   es?.close(); clearInterval(poll);
-  es = new EventSource(`/api/spaces/${sid}/events?token=${encodeURIComponent(tok)}`);
+  es = new EventSource(`${BASE}/api/spaces/${sid}/events?token=${encodeURIComponent(tok)}`);
   const on = (type, fn) => es.addEventListener(type, e => { lastEvent = Date.now(); $('#conn').textContent = '● 实时同步中'; $('#conn').className = 'conn ok'; if (S) fn(JSON.parse(e.data)); });
   on('hello', applyState);
   on('ping', () => {});
   on('members', ms => {
     const me = ms.find(m => m.id === S.me.id);
-    if (!me) { es.close(); clearInterval(poll); store.del(sid); toast('你已被移出空间'); return setTimeout(() => location.href = '/', 1500); }
+    if (!me) { es.close(); clearInterval(poll); store.del(sid); toast('你已被移出空间'); return setTimeout(() => location.href = BASE + '/', 1500); }
     if (me.role !== S.me.role) return refresh(); // 角色变化：重新拉取（邀请码可见性也会变）
     S.members = ms; S.me = me; renderMembers(); renderBoard(); renderHeader();
   });
@@ -140,7 +142,7 @@ async function enter() {
 }
 
 // 给别的设备 / 别的 AI 用的地址：有公网地址就用公网地址（在本机 localhost 打开时尤其重要）
-const ORIGIN = () => (S && S.publicUrl) || location.origin;
+const ORIGIN = () => (S && S.publicUrl) || location.origin + BASE;
 const lead = () => S && (S.me.role === 'admin' || S.me.role === 'supervisor');
 // 验收权：监督者；空间里还没有监督者时由管理员兜底（与服务端一致）
 const canReview = () => S && (S.me.role === 'supervisor' || (S.me.role === 'admin' && !S.members.some(m => m.role === 'supervisor')));
@@ -202,7 +204,7 @@ $('#ibList').onclick = async e => {
   const ap = e.target.closest('[data-approve]'), rj = e.target.closest('[data-reject]');
   if (ap || rj) {
     try {
-      await call('POST', `/api/spaces/${sid}/knocks/${(ap || rj).dataset[ap ? 'approve' : 'reject']}/${ap ? 'approve' : 'reject'}`, ap ? { role: ap.dataset.role || 'employee' } : {});
+      await call('POST', `${BASE}/api/spaces/${sid}/knocks/${(ap || rj).dataset[ap ? 'approve' : 'reject']}/${ap ? 'approve' : 'reject'}`, ap ? { role: ap.dataset.role || 'employee' } : {});
       toast(ap ? '已批准，它马上就会进来' : '已拒绝'); refreshInbox();
     } catch (err) { toast(err.message); }
     return;
@@ -216,7 +218,7 @@ $('#ibList').onclick = async e => {
   else if (act.type === 'wake') { await navigator.clipboard.writeText(wakeText()).catch(() => prompt('复制这句话：', wakeText())); toast(`已复制唤醒语，去 ${member(act.member)?.name || '它'} 的对话框里粘贴发送`); }
 };
 // 收件箱每分钟刷新一次（“已停多久”这类事项要靠时间推移才会出现）
-async function refreshInbox() { if (S && S.me.role === 'admin') { try { const r = await call('GET', `/api/spaces/${sid}/inbox?boss=1`); S.inbox = r.items; renderInbox(); } catch { } } }
+async function refreshInbox() { if (S && S.me.role === 'admin') { try { const r = await call('GET', `${BASE}/api/spaces/${sid}/inbox?boss=1`); S.inbox = r.items; renderInbox(); } catch { } } }
 setInterval(refreshInbox, 60000);
 
 // ---------- 空间目标 ----------
@@ -268,7 +270,7 @@ $('#goalForm').onsubmit = async e => {
   if (!text && !doc && !S.goal?.docName) return toast('请写一句话目标，或上传目标文档');
   const btn = e.target.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = '上传中…';
   try {
-    S.goal = await call('POST', `/api/spaces/${sid}/goal`, { text, doc: doc || undefined, removeDoc: removeDoc || undefined });
+    S.goal = await call('POST', `${BASE}/api/spaces/${sid}/goal`, { text, doc: doc || undefined, removeDoc: removeDoc || undefined });
     docCache = null; btn.disabled = false; btn.textContent = '保存目标'; renderGoal(); $('#goalDlg').close(); toast(S.goal.docConverted ? `已上传，${S.goal.docConverted.toUpperCase()} 已转成文字供 AI 阅读` : '目标已更新，AI 会按它持续工作');
   } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = '保存目标'; }
 };
@@ -282,14 +284,14 @@ async function showText(title, url) {
     $('#docDlg').showModal();
   } catch (err) { toast(err.message); }
 }
-$('#goalDocBtn').onclick = () => showText(S.goal.docName, `/api/spaces/${sid}/goal/doc`);
+$('#goalDocBtn').onclick = () => showText(S.goal.docName, `${BASE}/api/spaces/${sid}/goal/doc`);
 $('#goalDone').onclick = async () => {
   const summary = prompt('确认目标已达成？所有 AI 收到后会停止工作。\n写一句达成总结：', '');
   if (summary === null) return;
-  try { S.goal = await call('POST', `/api/spaces/${sid}/goal/achieve`, { summary }); renderGoal(); } catch (err) { toast(err.message); }
+  try { S.goal = await call('POST', `${BASE}/api/spaces/${sid}/goal/achieve`, { summary }); renderGoal(); } catch (err) { toast(err.message); }
 };
 $('#goalReopen').onclick = async () => {
-  try { S.goal = await call('POST', `/api/spaces/${sid}/goal/reopen`); renderGoal(); toast('已重新开启，AI 会继续工作'); } catch (err) { toast(err.message); }
+  try { S.goal = await call('POST', `${BASE}/api/spaces/${sid}/goal/reopen`); renderGoal(); toast('已重新开启，AI 会继续工作'); } catch (err) { toast(err.message); }
 };
 $('#runnerBtn').onclick = () => {
   if (S.me.role !== 'admin') return toast('只有管理员能查看接入命令');
@@ -300,7 +302,7 @@ $('#runnerBtn').onclick = () => {
 };
 $('#runnerDlg').onclick = async e => {
   const p = e.target.closest('[data-pick]');
-  if (p) { try { const info = await call('GET', `/api/spaces/${sid}/members/${p.dataset.pick}/connect`); $('#runnerDlg').close(); openConnect(info, member(p.dataset.pick)?.name || '', 'online', p.dataset.pick); } catch (err) { toast(err.message); } return; }
+  if (p) { try { const info = await call('GET', `${BASE}/api/spaces/${sid}/members/${p.dataset.pick}/connect`); $('#runnerDlg').close(); openConnect(info, member(p.dataset.pick)?.name || '', 'online', p.dataset.pick); } catch (err) { toast(err.message); } return; }
   if (e.target.closest('[data-addfirst]')) { e.preventDefault(); $('#runnerDlg').close(); $('#addMemberBtn').click(); }
 };
 
@@ -344,7 +346,7 @@ function renderLogs() {
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 $('#logFilter').onchange = renderLogs;
-$('#logList').onclick = e => { const b = e.target.closest('[data-logfile]'); if (b) showText(b.dataset.name, `/api/spaces/${sid}/logfile/${b.dataset.logfile}`); };
+$('#logList').onclick = e => { const b = e.target.closest('[data-logfile]'); if (b) showText(b.dataset.name, `${BASE}/api/spaces/${sid}/logfile/${b.dataset.logfile}`); };
 let pendingLogFile = null;
 $('#logFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
@@ -363,7 +365,7 @@ $('#logForm').onsubmit = async e => {
   e.preventDefault();
   const done = $('#logDone').value.trim(); if (!done && !pendingLogFile) return toast('请填写这一步做了什么，或上传日志文件');
   try {
-    await call('POST', `/api/spaces/${sid}/logs`, { done, problem: $('#logProblem').value.trim(), taskId: $('#logTask').value || undefined, file: pendingLogFile || undefined });
+    await call('POST', `${BASE}/api/spaces/${sid}/logs`, { done, problem: $('#logProblem').value.trim(), taskId: $('#logTask').value || undefined, file: pendingLogFile || undefined });
     $('#logDone').value = ''; $('#logProblem').value = ''; pendingLogFile = null; $('#logDone').placeholder = '这一步做了什么（必填）'; toast('已写入日志');
   } catch (err) { toast(err.message); }
 };
@@ -415,10 +417,10 @@ $('#memberList').onclick = async e => {
   const lg = e.target.closest('[data-logs]');
   if (lg) { document.querySelector('[data-tab=logs]').click(); $('#logFilter').value = lg.dataset.logs; return renderLogs(); }
   const b = e.target.closest('button'); if (!b) return;
-  if (b.dataset.connect) { try { openConnect(await call('GET', `/api/spaces/${sid}/members/${b.dataset.connect}/connect`), member(b.dataset.connect)?.name || '', 'plain', b.dataset.connect); } catch (err) { toast(err.message); } return; }
+  if (b.dataset.connect) { try { openConnect(await call('GET', `${BASE}/api/spaces/${sid}/members/${b.dataset.connect}/connect`), member(b.dataset.connect)?.name || '', 'plain', b.dataset.connect); } catch (err) { toast(err.message); } return; }
   try {
-    if (b.dataset.role) await call('POST', `/api/spaces/${sid}/members/${b.dataset.role}/role`, { role: b.dataset.to });
-    if (b.dataset.kick && confirm(`确定把 ${member(b.dataset.kick)?.name} 移出空间？它的 token 会立即失效。`)) await call('DELETE', `/api/spaces/${sid}/members/${b.dataset.kick}`);
+    if (b.dataset.role) await call('POST', `${BASE}/api/spaces/${sid}/members/${b.dataset.role}/role`, { role: b.dataset.to });
+    if (b.dataset.kick && confirm(`确定把 ${member(b.dataset.kick)?.name} 移出空间？它的 token 会立即失效。`)) await call('DELETE', `${BASE}/api/spaces/${sid}/members/${b.dataset.kick}`);
   } catch (err) { toast(err.message); }
 };
 
@@ -465,7 +467,7 @@ function openDetail(taskId) {
 }
 $('#detailDlg').onclick = async e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
-  const dlg = $('#detailDlg'), act = b.dataset.act, url = `/api/spaces/${sid}/tasks/${dlg.dataset.id}`;
+  const dlg = $('#detailDlg'), act = b.dataset.act, url = `${BASE}/api/spaces/${sid}/tasks/${dlg.dataset.id}`;
   if (act === 'close') return dlg.close();
   const note = $('#dNote')?.value.trim();
   const t0 = () => S.tasks.find(x => x.id === dlg.dataset.id) || {};
@@ -496,7 +498,7 @@ function receipt(m) {
   return '';
 }
 // ---------- 文件：截图 / 视频 / 附件 ----------
-const fileUrl = (f, sub = '') => `/api/spaces/${sid}/files/${f.id}${sub ? '/' + sub : ''}?token=${encodeURIComponent(tok)}`;
+const fileUrl = (f, sub = '') => `${BASE}/api/spaces/${sid}/files/${f.id}${sub ? '/' + sub : ''}?token=${encodeURIComponent(tok)}`;
 const fileById = id => (S.files || []).find(f => f.id === id);
 const sizeLabel = n => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 function fileHTML(f) {
@@ -525,7 +527,7 @@ function uploadFile(file, opts = {}) {
     if (opts.to) qs.set('to', opts.to);
     if (opts.text) qs.set('text', opts.text);
     const x = new XMLHttpRequest();
-    x.open('POST', `/api/spaces/${sid}/files?${qs}`);
+    x.open('POST', `${BASE}/api/spaces/${sid}/files?${qs}`);
     x.setRequestHeader('authorization', `Bearer ${tok}`);
     if (file.type) x.setRequestHeader('content-type', file.type);
     x.upload.onprogress = e => { if (e.lengthComputable) $('#upProg').textContent = `上传 ${file.name} ${Math.round(e.loaded / e.total * 100)}%`; };
@@ -540,7 +542,7 @@ async function uploadChunked(file, opts = {}) {
   if (opts.taskId) h['x-task-id'] = opts.taskId;
   if (opts.to) h['x-to'] = opts.to;
   if (opts.text) h['x-file-text'] = encodeURIComponent(opts.text);
-  const start = await fetch(`/api/spaces/${sid}/files/uploads`, { method: 'POST', headers: h }).then(r => r.json());
+  const start = await fetch(`${BASE}/api/spaces/${sid}/files/uploads`, { method: 'POST', headers: h }).then(r => r.json());
   if (!start.uploadId) throw new Error(start.error || '无法开始上传');
   const size = start.chunkSize || 2 * 1024 * 1024, n = Math.ceil(file.size / size);
   let done = 0, next = 0;
@@ -548,7 +550,7 @@ async function uploadChunked(file, opts = {}) {
     while (next < n) {
       const i = next++;
       for (let t = 1; ; t++) {
-        const r = await fetch(`/api/spaces/${sid}/files/uploads/${start.uploadId}/${i}`, { method: 'PUT', headers: { authorization: `Bearer ${tok}` }, body: file.slice(i * size, (i + 1) * size) }).catch(() => null);
+        const r = await fetch(`${BASE}/api/spaces/${sid}/files/uploads/${start.uploadId}/${i}`, { method: 'PUT', headers: { authorization: `Bearer ${tok}` }, body: file.slice(i * size, (i + 1) * size) }).catch(() => null);
         if (r && r.ok) break;
         if (t >= 5) throw new Error(`第 ${i} 块上传失败，请重试`);
         await new Promise(res => setTimeout(res, t * 2000));
@@ -557,7 +559,7 @@ async function uploadChunked(file, opts = {}) {
     }
   };
   await Promise.all([worker(), worker(), worker()]);
-  const r = await fetch(`/api/spaces/${sid}/files/uploads/${start.uploadId}/complete`, { method: 'POST', headers: { authorization: `Bearer ${tok}` } });
+  const r = await fetch(`${BASE}/api/spaces/${sid}/files/uploads/${start.uploadId}/complete`, { method: 'POST', headers: { authorization: `Bearer ${tok}` } });
   $('#upProg').textContent = '';
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || '合并失败');
@@ -618,13 +620,13 @@ $('#msgList').addEventListener('click', async e => {
 $('#msgList').onclick = async e => {
   const o = e.target.closest('[data-open-task]'); if (o) return openDetail(o.dataset.openTask);
   const q = e.target.closest('[data-quick-approve]');
-  if (q) { try { await call('PATCH', `/api/spaces/${sid}/tasks/${q.dataset.quickApprove}`, { status: 'approved' }); toast('已验收通过'); } catch (err) { toast(err.message); } }
+  if (q) { try { await call('PATCH', `${BASE}/api/spaces/${sid}/tasks/${q.dataset.quickApprove}`, { status: 'approved' }); toast('已验收通过'); } catch (err) { toast(err.message); } }
 };
 $('#msgText').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#msgForm').requestSubmit(); } };
 $('#msgForm').onsubmit = async e => {
   e.preventDefault();
   const text = $('#msgText').value.trim(); if (!text) return;
-  try { await call('POST', `/api/spaces/${sid}/messages`, { text, to: $('#msgTo').value || undefined }); $('#msgText').value = ''; } catch (err) { toast(err.message); }
+  try { await call('POST', `${BASE}/api/spaces/${sid}/messages`, { text, to: $('#msgTo').value || undefined }); $('#msgText').value = ''; } catch (err) { toast(err.message); }
 };
 
 // ---------- 一句话拉 AI 进来（局域网） ----------
@@ -677,7 +679,7 @@ function renderConnect(c) {
 let connId = '';
 async function rotateToken() {
   if (!connId || !confirm(`给「${connName}」换一个新令牌？旧的一句话、接入命令、MCP 配置会立即失效，需要把新的重新发给它。`)) return;
-  try { const r = await call('POST', `/api/spaces/${sid}/members/${connId}/rotate`); if (r.connect) { conn = r.connect; renderConnect(document.querySelector('.ctab.active')?.dataset.c || 'plain'); } toast('已换新令牌，旧的已失效'); } catch (err) { toast(err.message); }
+  try { const r = await call('POST', `${BASE}/api/spaces/${sid}/members/${connId}/rotate`); if (r.connect) { conn = r.connect; renderConnect(document.querySelector('.ctab.active')?.dataset.c || 'plain'); } toast('已换新令牌，旧的已失效'); } catch (err) { toast(err.message); }
 }
 function openConnect(info, name, tab = 'plain', id = '') {
   connId = id;
@@ -695,7 +697,7 @@ $('#addForm').onsubmit = async e => {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(e.target));
   try {
-    const r = await call('POST', `/api/spaces/${sid}/members`, { ...f, kind: 'ai' });
+    const r = await call('POST', `${BASE}/api/spaces/${sid}/members`, { ...f, kind: 'ai' });
     $('#addDlg').close();
     openConnect(r.connect, r.member.name, 'plain', r.member.id);
   } catch (err) { toast(err.message); }
@@ -721,7 +723,7 @@ $('#inviteDlg').onclick = async e => {
 };
 $('#resetInvite').onclick = async () => {
   if (!confirm('重置后旧的邀请链接立即失效，已加入的成员不受影响。继续？')) return;
-  try { const r = await call('POST', `/api/spaces/${sid}/reset-invite`); S.inviteCode = r.inviteCode; $('#inviteDlg').close(); openInvite(); } catch (err) { toast(err.message); }
+  try { const r = await call('POST', `${BASE}/api/spaces/${sid}/reset-invite`); S.inviteCode = r.inviteCode; $('#inviteDlg').close(); openInvite(); } catch (err) { toast(err.message); }
 };
 
 // ---------- 派发任务 ----------
@@ -733,7 +735,7 @@ $('#newTaskBtn').onclick = () => {
 $('#taskForm').onsubmit = async e => {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(e.target));
-  try { await call('POST', `/api/spaces/${sid}/tasks`, { ...f, assignee: f.assignee || null }); $('#taskDlg').close(); toast('任务已派发'); } catch (err) { toast(err.message); }
+  try { await call('POST', `${BASE}/api/spaces/${sid}/tasks`, { ...f, assignee: f.assignee || null }); $('#taskDlg').close(); toast('任务已派发'); } catch (err) { toast(err.message); }
 };
 
 setInterval(() => S && renderMembers(), 30000);
