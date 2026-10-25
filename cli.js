@@ -7,7 +7,8 @@
 // 默认局域网模式：同一网络里的 AI 一句话敲门加入，不开公网隧道。
 // 子命令：install-service（开机自启、崩溃自动重启）、uninstall-service、status、
 //        domain <地址>（绑定自己的域名：domain room.example.com 或子路径 domain example.com/room；
-//        名字上已有 DNS 记录时要加 --replace 才会替换；domain off 解绑）
+//        名字上已有 DNS 记录时要加 --replace 才会替换；domain off 解绑；
+//        浏览器授权走不通时，可在 Cloudflare 后台建隧道，用 domain example.com/room --token <隧道令牌>）
 // 可选参数：--public 额外开 Cloudflare 临时隧道（地址会变，含地址牌）；--lan 本次只用局域网（忽略已绑定的域名）；
 //          --port 4300；--no-open 不自动打开浏览器；--no-beacon 不写 GitHub 地址牌
 // 公网隧道用 Cloudflare：绑定了域名就用固定隧道（地址不变），否则 --public 用免费临时隧道。本机没有 cloudflared 时会自动下载到 ~/.agent-room/bin。
@@ -27,7 +28,7 @@ const DATA = path.resolve(process.env.AIWS_DATA || (ROOT.includes(`${path.sep}_n
 const PUBLIC_FILE = path.join(DATA, 'public-url');
 // 绑定的自有域名（node cli.js domain room.example.com 写入）：有它就走 Cloudflare 固定隧道，地址永远不变
 const DOMAIN_FILE = path.join(DATA, 'domain.json');
-const readDomain = () => { try { const d = JSON.parse(fs.readFileSync(DOMAIN_FILE, 'utf8')); return d.domain && d.id ? d : null; } catch { return null; } };
+const readDomain = () => { try { const d = JSON.parse(fs.readFileSync(DOMAIN_FILE, 'utf8')); return d.domain && (d.id || d.token) ? d : null; } catch { return null; } };
 const DOMAIN = flag('--lan') ? null : readDomain();
 // 默认只在局域网里用；绑定了域名或加 --public 才开公网隧道
 const PUBLIC = !!DOMAIN || flag('--public');
@@ -172,6 +173,15 @@ async function setupDomain(host) {
   const sub = raw.slice(host.length); // 子路径，如 /room
   if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(host) || (sub && !/^\/[A-Za-z0-9_-]+$/.test(sub))) throw new Error('用法：node cli.js domain room.你的域名.com，或 node cli.js domain 你的域名.com/room');
   const replace = argv.includes('--replace');
+  // 令牌方式：隧道和域名路由在 Cloudflare 后台建好，这里只保存令牌（不需要 cert.pem）
+  const tok = opt('--token', '');
+  if (tok) {
+    if (!/^[A-Za-z0-9+/=_-]{60,}$/.test(tok)) throw new Error('隧道令牌格式不对：复制 Cloudflare 后台安装命令里 eyJ 开头的那一长串');
+    fs.mkdirSync(DATA, { recursive: true });
+    fs.writeFileSync(DOMAIN_FILE, JSON.stringify({ domain: host, path: sub, token: tok, at: new Date().toISOString() }, null, 1), { mode: 0o600 });
+    log(`✅ 已保存隧道令牌，房间地址 https://${host}${sub}（令牌存在 ${DOMAIN_FILE}，已被 git 忽略）`);
+    return restartService();
+  }
   const bin = await getCloudflared();
   if (!fs.existsSync(path.join(CF_DIR, 'cert.pem'))) {
     log(`\n第 1 步 / 共 3 步：授权 Cloudflare。浏览器会打开授权页（没打开就复制下面出现的链接）：\n  登录 Cloudflare → 点选 ${host.split('.').slice(-2).join('.')} → Authorize。只需要做一次。\n`);
@@ -207,7 +217,9 @@ function restartService() {
 // 守着固定隧道：断了就重连，地址不变
 async function namedTunnelLoop(bin) {
   while (!stopping) {
-    const c = child(bin, ['tunnel', '--no-autoupdate', 'run', '--url', `http://localhost:${PORT}`, '--credentials-file', DOMAIN.credentials, DOMAIN.id]);
+    // 令牌通过环境变量传，不出现在进程列表里
+    const c = DOMAIN.token ? child(bin, ['tunnel', '--no-autoupdate', 'run', '--url', `http://localhost:${PORT}`], { env: { ...process.env, TUNNEL_TOKEN: DOMAIN.token } })
+      : child(bin, ['tunnel', '--no-autoupdate', 'run', '--url', `http://localhost:${PORT}`, '--credentials-file', DOMAIN.credentials, DOMAIN.id]);
     const exited = new Promise(r => c.once('exit', r));
     let up = false;
     const onData = d => { if (!up && /Registered tunnel connection/i.test(String(d))) { up = true; setPublic(`https://${DOMAIN.domain}${DOMAIN.path || ''}`); } };
