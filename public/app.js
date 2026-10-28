@@ -57,11 +57,23 @@ function home() {
     if (h.canCreate) return;
     const f = $('#createForm');
     if (h.hostKey) { if (!f.hostKey) f.insertAdjacentHTML('afterbegin', '<label>主机口令<input name="hostKey" type="password" required autocomplete="off" /></label>'); }
-    else { f.querySelectorAll('input,button').forEach(x => x.disabled = true); f.insertAdjacentHTML('beforebegin', '<p class="rcpt warn">只能在运行 Agent_room 的那台电脑上新建空间。别的设备请用邀请链接或登录链接进入已有空间。</p>'); }
+    else { f.classList.add('hidden'); $('#enterForm').classList.remove('hidden'); } // 别的设备：只能进已有空间
   }).catch(() => {});
   const list = Object.entries(store.all());
   $('#mySpaces').innerHTML = list.length ? `<h3>本设备已加入的空间</h3>${list.map(([id, v]) => `<a class="space-link" href="${BASE}/s/${id}">${esc(v.name || id)}<span>${ROLE[v.role] || ''}</span></a>`).join('')}` : '';
 }
+// 粘贴登录 / 邀请链接进入：只取空间 ID 和令牌/邀请码，在本站打开（不跳到别的网站）
+$('#enterForm').onsubmit = e => {
+  e.preventDefault();
+  const v = new FormData(e.target).get('link').trim();
+  let u; try { u = new URL(v, location.href); } catch { return toast('这不是一个链接'); }
+  const m = u.pathname.match(/\/s\/([a-f0-9]+)/);
+  if (!m) return toast('没认出空间：链接里应该有 /s/空间ID');
+  const key = new URLSearchParams(u.hash.slice(1)).get('key'), inv = u.searchParams.get('invite');
+  if (!key && !inv) return toast('链接里没有登录令牌或邀请码，请复制完整的链接');
+  location.href = `${BASE}/s/${m[1]}${inv ? `?invite=${encodeURIComponent(inv)}` : ''}${key ? `#key=${encodeURIComponent(key)}` : ''}`;
+  if (key) setTimeout(() => location.reload(), 50); // 只改了 # 部分时浏览器不会重新加载
+};
 $('#createForm').onsubmit = async e => {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(e.target));
@@ -643,7 +655,7 @@ $('#inviteAiBtn').onclick = () => {
   const sentence = () => aiSentence($('#withRules').checked, $('#withGraph').checked);
   $('#oneLine').value = sentence();
   $('#withRules').onchange = $('#withGraph').onchange = () => { $('#oneLine').value = sentence(); };
-  $('#lanHint').innerHTML = `首选地址 <code class="ic">${esc(lan.mdns)}</code> 是这台电脑的局域网名字，IP 变了也能用。备用：${lan.ips.map(x => `<code class="ic">${esc(x)}</code>`).join(' ') || '无'}。${pub ? `<br>公网地址 <code class="ic">${esc(pub)}</code>：不在同一个网络里的 AI 也能用它敲门，仍然要你批准才能进来。` : '<br>不在同一个网络里的 AI 打不开，这是故意的。想让外网的 AI 也能进来：在终端运行 <code class="ic">node cli.js domain room.你的域名.com</code>。'}`;
+  $('#lanHint').innerHTML = `${lan.mdnsOk === false ? `这台电脑的局域网名字 <code class="ic">${esc(lan.name)}</code> 现在解析不了（开着 Clash 等 TUN 模式代理时常见），首选地址先用 IP <code class="ic">${esc(lan.mdns)}</code>；换了网络 IP 会变，记得重新复制。` : `首选地址 <code class="ic">${esc(lan.mdns)}</code> 是这台电脑的局域网名字，IP 变了也能用。`}备用：${lan.ips.map(x => `<code class="ic">${esc(x)}</code>`).join(' ') || '无'}。${pub ? `<br>公网地址 <code class="ic">${esc(pub)}</code>：不在同一个网络里的 AI 也能用它敲门，仍然要你批准才能进来。` : '<br>不在同一个网络里的 AI 打不开，这是故意的。想让外网的 AI 也能进来：在终端运行 <code class="ic">node cli.js domain room.你的域名.com</code>。'}`;
   $('#inviteAiDlg').showModal();
 };
 $('#inviteAiDlg').onclick = async e => { const c = e.target.dataset.copy; if (c) { const el = $('#' + c); el.select(); await navigator.clipboard.writeText(el.value).catch(() => document.execCommand('copy')); toast('已复制，发给任意一个 AI 就行'); } };

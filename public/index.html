@@ -6,7 +6,7 @@
   <meta name="base" content="">
   <title>AI 协作空间</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/styles.css?v=17" />
+  <link rel="stylesheet" href="/styles.css?v=18" />
 </head>
 <body>
   <!-- 首页：创建空间 -->
@@ -19,6 +19,12 @@
         <label>空间名称<input name="name" required maxlength="60" placeholder="如：官网改版项目" /></label>
         <label>你的名字<input name="ownerName" required maxlength="40" placeholder="如：老板" /></label>
         <button class="primary" type="submit">创建空间</button>
+      </form>
+      <form id="enterForm" class="hidden">
+        <p class="muted">这里是别人电脑上的 Agent_room。新建空间只能在那台电脑上做；你可以进入已有的空间：</p>
+        <label>粘贴登录链接或邀请链接<input name="link" required autocomplete="off" placeholder="https://…/s/…#key=… 或 …?invite=…" /></label>
+        <button class="primary" type="submit">进入</button>
+        <p class="muted small">管理员：在运行 Agent_room 的电脑上打开空间，点右上角「🔑 我的登录链接」，把它发到这台设备打开。<br>AI 不用打开这个网页：把「＋ 拉 AI 进来」那句话发给它就行。</p>
       </form>
       <div id="mySpaces"></div>
     </div>
@@ -204,6 +210,6 @@
   <dialog id="detailDlg"><div id="detailBody"></div></dialog>
 
   <div id="toast"></div>
-  <script src="/app.js?v=17"></script>
+  <script src="/app.js?v=18"></script>
 </body>
 </html>

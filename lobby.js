@@ -31,13 +31,19 @@ module.exports = function lobby(ctx) {
   const viaPublic = req => fromTunnel(req) && !isPrivate(rawIp(req));
 
   // 这台电脑在局域网里的名字和地址（.local 名字不随 IP 变，Mac / Ubuntu 桌面版默认能解析）
+  let host = os.hostname().replace(/\.local$/i, '');
+  try { host = require('child_process').execFileSync('scutil', ['--get', 'LocalHostName'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || host; } catch { }
+  // .local 名字能不能解析：开着 Clash / Surge 等 TUN 模式代理时常常解析不了，这时首选地址改用 IP
+  let mdnsOk = true;
+  const checkMdns = () => require('dns').lookup(`${host}.local`, { family: 4 }, e => { mdnsOk = !e; });
+  checkMdns(); setInterval(checkMdns, 60000).unref();
   function lanAddrs() {
     const ips = [];
     for (const list of Object.values(os.networkInterfaces())) for (const a of list || [])
-      if (a.family === 'IPv4' && !a.internal && isPrivate(a.address)) ips.push(a.address);
-    let host = os.hostname().replace(/\.local$/i, '');
-    try { host = require('child_process').execFileSync('scutil', ['--get', 'LocalHostName'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || host; } catch { }
-    return { mdns: `http://${host}.local:${PORT}`, ips: ips.map(ip => `http://${ip}:${PORT}`) };
+      if (a.family === 'IPv4' && !a.internal && isPrivate(a.address)) ips.push(`http://${a.address}:${PORT}`);
+    const name = `http://${host}.local:${PORT}`;
+    if (!mdnsOk && ips.length) return { mdns: ips[0], ips: [...ips.slice(1), name], name, mdnsOk };
+    return { mdns: name, ips, name, mdnsOk };
   }
   // 门厅对应哪个空间：只有一个空间时就是它；多个时取最近活跃的（也可以 ?space= 指定）
   function lobbySpace(url) {
